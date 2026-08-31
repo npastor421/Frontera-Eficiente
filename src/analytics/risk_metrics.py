@@ -135,9 +135,17 @@ def calculate_portfolio_returns(
         w_vec = np.asarray(weights, dtype=np.float64).ravel()
 
     if len(w_vec) != n_assets:
-        raise ValueError(
-            f"Weights vector length ({len(w_vec)}) does not match returns columns ({n_assets})."
-        )
+        if len(w_vec) > n_assets:
+            w_vec = w_vec[:n_assets]
+        else:
+            w_vec = np.pad(w_vec, (0, n_assets - len(w_vec)), mode="constant", constant_values=0.0)
+
+    # Normalize if sum > 0
+    s = np.sum(w_vec)
+    if s > 1e-12:
+        w_vec = w_vec / s
+    else:
+        w_vec = np.ones(n_assets) / n_assets
 
     port_ret_values = daily_returns.values @ w_vec
     return pd.Series(port_ret_values, index=daily_returns.index, name="portfolio_returns")
@@ -547,6 +555,17 @@ def compute_portfolio_risk_metrics(
             w_vec = np.asarray(weights.values, dtype=np.float64)
     else:
         w_vec = np.asarray(weights, dtype=np.float64).ravel()
+
+    if len(w_vec) != len(tickers):
+        if len(w_vec) > len(tickers):
+            w_vec = w_vec[:len(tickers)]
+        else:
+            w_vec = np.pad(w_vec, (0, len(tickers) - len(w_vec)), mode="constant", constant_values=0.0)
+    s = np.sum(w_vec)
+    if s > 1e-12:
+        w_vec = w_vec / s
+    else:
+        w_vec = np.ones(len(tickers)) / len(tickers)
 
     # 3. Annualized Return (Arithmetic)
     if expected_returns is not None:

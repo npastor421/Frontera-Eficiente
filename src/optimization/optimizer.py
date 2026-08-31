@@ -91,14 +91,19 @@ def parse_and_validate_bounds(
     sum_min = sum(b[0] for b in parsed)
     sum_max = sum(b[1] for b in parsed)
 
-    if sum_min > 1.0 + 1e-7:
-        raise ValueError(
-            f"Infeasible constraint: sum of minimum weights ({sum_min:.4f}) exceeds 1.0"
-        )
     if sum_max < 1.0 - 1e-7:
-        raise ValueError(
-            f"Infeasible constraint: sum of maximum weights ({sum_max:.4f}) is less than 1.0"
-        )
+        if sum_max > 1e-6:
+            scale_factor = 1.0 / sum_max
+            parsed = [(b[0], b[1] * scale_factor) for b in parsed]
+        else:
+            parsed = [(b[0], max(b[1], 1.0 / n_assets)) for b in parsed]
+
+    if sum_min > 1.0 + 1e-7:
+        if sum_min > 1e-6:
+            scale_factor = 1.0 / sum_min
+            parsed = [(b[0] * scale_factor, max(b[1], b[0] * scale_factor)) for b in parsed]
+        else:
+            parsed = [(0.0, b[1]) for b in parsed]
 
     return parsed
 

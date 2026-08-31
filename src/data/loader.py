@@ -67,6 +67,16 @@ def is_cash_ticker(ticker: str) -> bool:
     return str(ticker).strip().upper() in CASH_TICKERS
 
 
+def to_yf_ticker(ticker: str) -> str:
+    """Translate standard ticker symbol to Yahoo Finance representation (e.g. BRK.B -> BRK-B)."""
+    t = str(ticker).strip().upper()
+    if any(t.endswith(sfx) for sfx in [".BA", ".SA", ".MX", ".L", ".TO", ".DE", ".MC", ".PA"]):
+        return t
+    if "." in t and not t.startswith("^"):
+        return t.replace(".", "-")
+    return t
+
+
 def fetch_asset_data(
     tickers: Union[str, Sequence[str]],
     start_date: Union[str, datetime.date, datetime.datetime],
@@ -79,32 +89,8 @@ def fetch_asset_data(
 
     Handles yfinance MultiIndex structures, single vs multi-ticker downloads,
     US equities, ETFs, crypto pairs (e.g. 'BTC-USD'), Argentine CEDEARs (e.g. 'AAPL.BA'),
-    benchmark indices (e.g. '^GSPC', 'SPY'), and cash/liquidity assets ('CASH', 'USD').
-
-    Parameters
-    ----------
-    tickers : str or Sequence[str]
-        List or comma-separated string of ticker symbols.
-    start_date : str, datetime.date, or datetime.datetime
-        Start date (inclusive). Format 'YYYY-MM-DD' or datetime object.
-    end_date : str, datetime.date, or datetime.datetime
-        End date (inclusive/exclusive depending on interval). Format 'YYYY-MM-DD' or datetime object.
-    interval : str, default '1d'
-        Data frequency ('1d', '1wk', '1mo').
-    auto_adjust : bool, default True
-        Whether to download auto-adjusted close prices.
-
-    Returns
-    -------
-    pd.DataFrame
-        Index: pd.DatetimeIndex (tz-naive, ascending, normalized to 00:00:00, named 'Date')
-        Columns: Ticker symbols (str)
-        Values: float64 adjusted close prices
-
-    Raises
-    ------
-    ValueError
-        If inputs are invalid or no price data could be retrieved for any requested ticker.
+    benchmark indices (e.g. '^GSPC', 'SPY'), share classes ('BRK.B' -> 'BRK-B'),
+    and cash/liquidity assets ('CASH', 'USD').
     """
     valid_tickers = validate_tickers(tickers)
     risky_tickers = [t for t in valid_tickers if not is_cash_ticker(t)]
@@ -121,13 +107,16 @@ def fetch_asset_data(
     else:
         end_str = str(end_date).strip()
 
+    # Map user tickers to yfinance tickers and build reverse mapping
+    yf_to_user_map = {to_yf_ticker(t): t for t in risky_tickers}
+    yf_download_list = list(yf_to_user_map.keys())
+
     prices = pd.DataFrame()
 
-    if risky_tickers:
-        # Download from yfinance
+    if yf_download_list:
         try:
             raw_df = yf.download(
-                tickers=risky_tickers,
+                tickers=yf_download_list,
                 start=start_str,
                 end=end_str,
                 interval=interval,
@@ -144,41 +133,39 @@ def fetch_asset_data(
 
         # Extract price slice from MultiIndex or Flat Index
         if isinstance(raw_df.columns, pd.MultiIndex):
-            level_0 = [str(x) for x in raw_df.columns.get_level_values(0)]
-            level_1 = [str(x) for x in raw_df.columns.get_level_values(1)]
-
-            if "Adj Close" in level_0:
-                prices = raw_df["Adj Close"].copy()
-            elif "Close" in level_0:
+            level_0 = list(raw_df.columns.get_level_values(0).unique())
+            if "Close" in level_0:
                 prices = raw_df["Close"].copy()
-            elif "Adj Close" in level_1:
-                prices = raw_df.xs("Adj Close", axis=1, level=1).copy()
-            elif "Close" in level_1:
-                prices = raw_df.xs("Close", axis=1, level=1).copy()
+            elif "Adj Close" in level_0:
+                prices = raw_df["Adj Close"].copy()
             else:
                 first_metric = raw_df.columns.levels[0][0]
                 prices = raw_df[first_metric].copy()
         else:
             flat_cols = [str(c) for c in raw_df.columns]
-            if "Adj Close" in flat_cols:
-                prices = raw_df[["Adj Close"]].copy()
-                if len(risky_tickers) == 1:
-                    prices.columns = [risky_tickers[0]]
-            elif "Close" in flat_cols:
+            if "Close" in flat_cols:
                 prices = raw_df[["Close"]].copy()
-                if len(risky_tickers) == 1:
-                    prices.columns = [risky_tickers[0]]
+                if len(yf_download_list) == 1:
+                    prices.columns = [yf_download_list[0]]
+            elif "Adj Close" in flat_cols:
+                prices = raw_df[["Adj Close"]].copy()
+                if len(yf_download_list) == 1:
+                    prices.columns = [yf_download_list[0]]
             else:
                 prices = raw_df.copy()
 
         if isinstance(prices, pd.Series):
-            ticker_name = risky_tickers[0] if len(risky_tickers) == 1 else str(prices.name)
+            ticker_name = yf_download_list[0] if len(yf_download_list) == 1 else str(prices.name)
             prices = prices.to_frame(name=ticker_name)
 
-        prices.columns = [str(col).strip() for col in prices.columns]
-        matched_cols = [t for t in risky_tickers if t in prices.columns]
-        if matched_cols:
-            prices = prices[matched_cols]
+        # Rename yfinance tickers back to the user's requested ticker names
+        renamed_cols = {}
+        for col in prices.columns:
+            clean_col = str(col).strip()
+            orig_name = yf_to_user_map.get(clean_col, yf_to_user_map.get(clean_col.upper(), clean_col))
+            renamed_cols[col] = orig_name
+        prices.rename(columns=renamed_cols, inplace=True)
+        prices.columns = [str(col).strip().upper() for col in prices.columns]
     else:
         # Only cash tickers were provided
         date_idx = pd.date_range(start_str, end_str, freq="B", name="Date")

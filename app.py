@@ -485,6 +485,11 @@ with st.sidebar:
     with col_b2:
         max_weight_pct = st.number_input("Peso Máximo (%)", value=100.0, min_value=0.0, max_value=100.0, step=5.0) / 100.0
 
+    n_curr = max(1, len(st.session_state.get("tickers", [1, 2])))
+    min_req_max = 1.0 / n_curr
+    if max_weight_pct < min_req_max - 1e-5:
+        st.caption(f"⚠️ *Con {n_curr} activos, el peso máx se auto-ajustará para permitir sumar 100%.*")
+
     bounds = (min_weight_pct if allow_short else max(0.0, min_weight_pct), max_weight_pct)
 
 
@@ -717,6 +722,16 @@ if daily_returns_df is None or clean_prices_df is None or daily_returns_df.empty
     st.info("👋 Por favor verifique los tickers en la matriz y presione 'Descargar / Actualizar Datos'.")
     st.stop()
 
+# Synchronize active tickers with daily_returns_df columns
+active_tickers = list(daily_returns_df.columns)
+st.session_state["tickers"] = active_tickers
+
+# Notify if any matrix ticker was missing or dropped
+requested_matrix_tickers = [str(r.get("Ticker", "")).strip().upper() for _, r in edited_matrix_df.iterrows() if str(r.get("Ticker", "")).strip()]
+missing_tickers = [t for t in requested_matrix_tickers if t not in active_tickers]
+if missing_tickers:
+    st.warning(f"⚠️ Los activos {missing_tickers} no devolvieron datos en el rango seleccionado. Los cálculos se realizan con los {len(active_tickers)} activos disponibles: {active_tickers}.")
+
 # 1. Statistical Modeling
 mu_series = calculate_expected_returns(
     returns=daily_returns_df,
@@ -770,14 +785,14 @@ mc_res = run_weight_space_monte_carlo(
 # 7. Risk Analytics Computation for Portfolios
 # ===========================================================================
 
-# Normalized user weights vector for analytics
-user_w_vec = np.array([float(st.session_state["weights"].get(t, 0.0)) for t in st.session_state["tickers"]], dtype=np.float64)
+# Normalized user weights vector for analytics strictly dimensioned to active_tickers
+user_w_vec = np.array([float(st.session_state["weights"].get(t, 1.0 / len(active_tickers))) for t in active_tickers], dtype=np.float64)
 if np.sum(user_w_vec) > 0:
     user_w_norm = user_w_vec / np.sum(user_w_vec)
 else:
     user_w_norm = np.ones(len(user_w_vec)) / len(user_w_vec)
 
-eq_w_vec = np.ones(len(st.session_state["tickers"])) / len(st.session_state["tickers"])
+eq_w_vec = np.ones(len(active_tickers)) / len(active_tickers)
 
 # Compute comprehensive risk metrics
 metrics_user = compute_portfolio_risk_metrics(
