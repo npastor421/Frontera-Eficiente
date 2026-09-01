@@ -42,6 +42,10 @@ class PortfolioRiskMetrics:
     var_95_param: float
     cvar_95_hist: float
     cvar_95_param: float
+    beta: Optional[float] = None
+    alpha_jensen: Optional[float] = None
+    r_squared: Optional[float] = None
+    benchmark_ticker: Optional[str] = None
     peak_date: Optional[Any] = None
     valley_date: Optional[Any] = None
     recovery_days: Optional[int] = None
@@ -502,7 +506,85 @@ def calculate_cvar_95(
 
 
 # ===========================================================================
-# 5. Master Portfolio Risk & Performance Metrics Engine
+# 5. Beta & CAPM Alpha Analytics Engine
+# ===========================================================================
+
+def calculate_beta(
+    returns: Union[pd.Series, np.ndarray, List[float]],
+    benchmark_returns: Union[pd.Series, np.ndarray, List[float]],
+) -> float:
+    """
+    Calculate Beta coefficient of an asset or portfolio relative to a benchmark.
+
+    Formula:
+        beta = Cov(R_p, R_m) / Var(R_m)
+
+    Parameters
+    ----------
+    returns : pd.Series | np.ndarray | list
+        Asset or portfolio return series.
+    benchmark_returns : pd.Series | np.ndarray | list
+        Benchmark market return series.
+
+    Returns
+    -------
+    float
+        Beta coefficient. Returns 0.0 if benchmark variance is near zero.
+    """
+    if isinstance(returns, pd.Series) and isinstance(benchmark_returns, pd.Series):
+        aligned = pd.concat([returns, benchmark_returns], axis=1).dropna()
+        if len(aligned) < 2:
+            return 1.0
+        r_p = aligned.iloc[:, 0].values
+        r_m = aligned.iloc[:, 1].values
+    else:
+        r_p = np.asarray(returns, dtype=np.float64).ravel()
+        r_m = np.asarray(benchmark_returns, dtype=np.float64).ravel()
+        min_len = min(len(r_p), len(r_m))
+        if min_len < 2:
+            return 1.0
+        r_p = r_p[:min_len]
+        r_m = r_m[:min_len]
+
+    var_m = float(np.var(r_m, ddof=1))
+    if var_m < 1e-12:
+        return 0.0
+
+    cov_pm = float(np.cov(r_p, r_m, ddof=1)[0, 1])
+    return float(cov_pm / var_m)
+
+
+def calculate_jensen_alpha(
+    portfolio_return: float,
+    benchmark_return: float,
+    beta: float,
+    rf: float = 0.04,
+) -> float:
+    """
+    Calculate Annualized Jensen's Alpha.
+
+    Formula:
+        alpha = R_p - [R_f + beta * (R_m - R_f)]
+    """
+    expected_capm = rf + beta * (benchmark_return - rf)
+    return float(portfolio_return - expected_capm)
+
+
+def calculate_asset_betas(
+    daily_returns: pd.DataFrame,
+    benchmark_returns: pd.Series,
+) -> pd.Series:
+    """
+    Calculate individual Beta coefficients for all assets in a returns DataFrame.
+    """
+    betas = {}
+    for col in daily_returns.columns:
+        betas[col] = calculate_beta(daily_returns[col], benchmark_returns)
+    return pd.Series(betas, name="Beta")
+
+
+# ===========================================================================
+# 6. Master Portfolio Risk & Performance Metrics Engine
 # ===========================================================================
 
 def compute_portfolio_risk_metrics(
@@ -512,6 +594,8 @@ def compute_portfolio_risk_metrics(
     cov_matrix: Optional[Union[pd.DataFrame, np.ndarray]] = None,
     rf: float = 0.04,
     ann_factor: int = 252,
+    benchmark_returns: Optional[Union[pd.Series, np.ndarray]] = None,
+    benchmark_ticker: Optional[str] = "SPY",
 ) -> PortfolioRiskMetrics:
     """
     Compute comprehensive suite of risk, return, and performance metrics for a portfolio.
@@ -628,6 +712,28 @@ def compute_portfolio_risk_metrics(
     daily_sigma = float(np.std(ret_arr, ddof=1)) if t_days > 1 else 0.0
     var_95_param, cvar_95_param = compute_parametric_var_cvar(daily_mu, daily_sigma, alpha=0.05)
 
+    # 11. Beta & Alpha Benchmark Analytics
+    port_beta = None
+    jensen_alpha = None
+    r_squared = None
+    if benchmark_returns is not None:
+        port_beta = calculate_beta(port_returns, benchmark_returns)
+        if isinstance(benchmark_returns, pd.Series):
+            m_arr = benchmark_returns.dropna().values
+        else:
+            m_arr = np.asarray(benchmark_returns, dtype=np.float64).ravel()
+        m_ann_ret = float(np.mean(m_arr) * ann_factor) if len(m_arr) > 0 else ann_return
+        jensen_alpha = calculate_jensen_alpha(
+            portfolio_return=ann_return,
+            benchmark_return=m_ann_ret,
+            beta=port_beta,
+            rf=rf,
+        )
+        if len(m_arr) > 1 and len(ret_arr) > 1:
+            min_l = min(len(ret_arr), len(m_arr))
+            corr_val = float(np.corrcoef(ret_arr[:min_l], m_arr[:min_l])[0, 1])
+            r_squared = float(corr_val ** 2) if not np.isnan(corr_val) else 0.0
+
     return PortfolioRiskMetrics(
         annualized_return=ann_return,
         cagr=cagr,
@@ -640,6 +746,10 @@ def compute_portfolio_risk_metrics(
         var_95_param=var_95_param,
         cvar_95_hist=cvar_95_hist,
         cvar_95_param=cvar_95_param,
+        beta=port_beta,
+        alpha_jensen=jensen_alpha,
+        r_squared=r_squared,
+        benchmark_ticker=benchmark_ticker if benchmark_returns is not None else None,
         peak_date=peak_date,
         valley_date=valley_date,
         recovery_days=recovery_days,

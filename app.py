@@ -21,7 +21,12 @@ import pandas as pd
 import streamlit as st
 
 # Internal platform module imports
-from src.analytics.risk_metrics import compute_portfolio_risk_metrics
+from src.analytics.risk_metrics import (
+    calculate_asset_betas,
+    calculate_beta,
+    calculate_jensen_alpha,
+    compute_portfolio_risk_metrics,
+)
 from src.data.cleaner import clean_and_align_prices
 from src.data.loader import fetch_asset_data, load_manual_file, validate_tickers
 from src.export.exporter import (
@@ -176,6 +181,12 @@ def _init_session_state() -> None:
     if "num_assets" not in st.session_state:
         st.session_state["num_assets"] = 5
 
+    if "num_assets_selector" not in st.session_state:
+        st.session_state["num_assets_selector"] = st.session_state["num_assets"]
+
+    if "editor_version" not in st.session_state:
+        st.session_state["editor_version"] = 0
+
     if "portfolio_matrix_df" not in st.session_state:
         st.session_state["portfolio_matrix_df"] = _get_default_portfolio_df(st.session_state["num_assets"])
 
@@ -229,6 +240,8 @@ def _resize_portfolio_matrix(target_n: int) -> None:
         st.session_state["portfolio_matrix_df"] = pd.DataFrame(existing_rows)
 
     st.session_state["num_assets"] = target_n
+    st.session_state["num_assets_selector"] = target_n
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     parsed_tickers = [str(r["Ticker"]).strip().upper() for r in st.session_state["portfolio_matrix_df"].to_dict(orient="records") if str(r.get("Ticker", "")).strip()]
     st.session_state["tickers"] = parsed_tickers if parsed_tickers else ["SPY", "TLT"]
     st.session_state["weights"] = {
@@ -252,6 +265,8 @@ def _apply_preset(preset_key: str) -> None:
     n = len(tickers)
 
     st.session_state["num_assets"] = n
+    st.session_state["num_assets_selector"] = n
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     st.session_state["tickers"] = tickers
     st.session_state["weights"] = weights
     st.session_state["active_preset_name"] = preset["name"]
@@ -274,6 +289,8 @@ def _load_saved_portfolio_to_matrix(portfolio_id: str) -> None:
     n = len(tickers)
 
     st.session_state["num_assets"] = n
+    st.session_state["num_assets_selector"] = n
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     st.session_state["tickers"] = tickers
     st.session_state["weights"] = weights
     st.session_state["active_preset_name"] = p["name"]
@@ -346,6 +363,9 @@ def _normalize_current_weights() -> None:
 
     new_df = pd.DataFrame(rows)
     st.session_state["portfolio_matrix_df"] = new_df
+    st.session_state["num_assets"] = len(rows)
+    st.session_state["num_assets_selector"] = len(rows)
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     st.session_state["weights"] = {
         str(r["Ticker"]).strip().upper(): float(r["Ponderación (%)"]) / 100.0
         for r in rows
@@ -373,6 +393,9 @@ def _apply_optimal_weights_by_type(opt_type: str) -> None:
 
     new_df = pd.DataFrame(rows)
     st.session_state["portfolio_matrix_df"] = new_df
+    st.session_state["num_assets"] = len(rows)
+    st.session_state["num_assets_selector"] = len(rows)
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     st.session_state["weights"] = norm_w
 
 
@@ -392,6 +415,9 @@ def _apply_equal_weights() -> None:
 
     new_df = pd.DataFrame(rows)
     st.session_state["portfolio_matrix_df"] = new_df
+    st.session_state["num_assets"] = len(rows)
+    st.session_state["num_assets_selector"] = len(rows)
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
     st.session_state["weights"] = {
         str(r["Ticker"]).strip().upper(): float(r["Ponderación (%)"]) / 100.0
         for r in rows
@@ -430,6 +456,8 @@ with st.sidebar:
                 file_tickers = list(clean_prices_df.columns)
                 st.session_state["tickers"] = file_tickers
                 st.session_state["num_assets"] = len(file_tickers)
+                st.session_state["num_assets_selector"] = len(file_tickers)
+                st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
                 st.session_state["portfolio_matrix_df"] = pd.DataFrame({
                     "Ticker": file_tickers,
                     "Ponderación (%)": [round(100.0 / len(file_tickers), 2)] * len(file_tickers),
@@ -473,6 +501,13 @@ with st.sidebar:
         format_func=lambda x: x[1],
         index=0,
     )[0]
+
+    benchmark_symbol = st.selectbox(
+        "Índice de Referencia / Benchmark (para Beta y Alfa)",
+        options=["SPY", "QQQ", "ACWI", "DIA", "IWM", "^GSPC"],
+        index=0,
+        help="Activo de mercado contra el cual se calculan el Beta (β), el Alfa de Jensen (α) y el R² de cada portafolio.",
+    )
 
     st.markdown("---")
     st.markdown("### 🔒 Restricciones de Inversión")
@@ -612,11 +647,15 @@ st.caption("1. Elige la **cantidad de papeles**. 2. Escribe los tickers y sus po
 
 col_num, col_dates, col_refresh = st.columns([1.2, 2.0, 1.0])
 with col_num:
+    curr_matrix_len = len(st.session_state.get("portfolio_matrix_df", []))
+    if curr_matrix_len > 0 and st.session_state.get("num_assets_selector") != curr_matrix_len:
+        st.session_state["num_assets"] = curr_matrix_len
+        st.session_state["num_assets_selector"] = curr_matrix_len
+
     num_assets_val = st.number_input(
         "🔢 Cantidad de Papeles",
         min_value=2,
         max_value=30,
-        value=int(st.session_state.get("num_assets", len(st.session_state["portfolio_matrix_df"]))),
         step=1,
         key="num_assets_selector",
         on_change=_on_change_num_assets,
@@ -637,6 +676,7 @@ with col_refresh:
     btn_fetch = st.button("🔄 Descargar / Actualizar", use_container_width=True, help="Descarga los datos históricos de todos los tickers en la matriz.")
 
 # Render Editable Matrix
+editor_key = f"portfolio_matrix_editor_{st.session_state.get('editor_version', 0)}"
 edited_matrix_df = st.data_editor(
     st.session_state["portfolio_matrix_df"],
     column_config={
@@ -657,7 +697,7 @@ edited_matrix_df = st.data_editor(
     num_rows="fixed",
     use_container_width=True,
     hide_index=False,
-    key="portfolio_matrix_editor",
+    key=editor_key,
 )
 
 # Extract synchronized tickers and weights from matrix
@@ -669,6 +709,7 @@ st.session_state["weights"] = {
     if str(r["Ticker"]).strip()
 }
 st.session_state["portfolio_matrix_df"] = edited_matrix_df
+st.session_state["num_assets"] = len(edited_matrix_df)
 
 current_sum_pct = sum([float(r["Ponderación (%)"]) for _, r in edited_matrix_df.iterrows()])
 is_sum_valid = abs(current_sum_pct - 100.0) < 0.05
@@ -703,8 +744,9 @@ st.markdown("---")
 if data_source == "Yahoo Finance (En Vivo)":
     try:
         with st.spinner("Descargando precios históricos ajustados de la matriz..."):
+            all_req_fetch = list(dict.fromkeys(st.session_state["tickers"] + [benchmark_symbol]))
             raw_df = fetch_asset_data(
-                tickers=st.session_state["tickers"],
+                tickers=all_req_fetch,
                 start_date=str(start_date),
                 end_date=str(end_date),
             )
@@ -713,18 +755,30 @@ if data_source == "Yahoo Finance (En Vivo)":
         st.warning(f"Aviso de descarga yfinance: {e}. Generando datos de referencia de alta precisión.")
         rng = np.random.default_rng(42)
         dates = pd.date_range(start=str(start_date), end=str(end_date), freq="B")
-        n = len(st.session_state["tickers"])
+        all_req_fetch = list(dict.fromkeys(st.session_state["tickers"] + [benchmark_symbol]))
+        n = len(all_req_fetch)
         base_p = 100.0 * np.exp(np.cumsum(rng.normal(0.0005, 0.015, size=(len(dates), n)), axis=0))
-        clean_prices_df = pd.DataFrame(base_p, index=dates, columns=st.session_state["tickers"])
+        clean_prices_df = pd.DataFrame(base_p, index=dates, columns=all_req_fetch)
         daily_returns_df = clean_prices_df.pct_change().dropna()
 
 if daily_returns_df is None or clean_prices_df is None or daily_returns_df.empty:
     st.info("👋 Por favor verifique los tickers en la matriz y presione 'Descargar / Actualizar Datos'.")
     st.stop()
 
-# Synchronize active tickers with daily_returns_df columns
-active_tickers = list(daily_returns_df.columns)
+# Extract benchmark series for Beta & Jensen Alpha calculations
+if benchmark_symbol in daily_returns_df.columns:
+    benchmark_returns_series = daily_returns_df[benchmark_symbol]
+else:
+    benchmark_returns_series = daily_returns_df.mean(axis=1)
+
+# Synchronize active portfolio tickers (excluding standalone benchmark if not part of portfolio)
+active_tickers = [t for t in st.session_state["tickers"] if t in daily_returns_df.columns]
+if not active_tickers:
+    active_tickers = [c for c in daily_returns_df.columns if c != benchmark_symbol] or list(daily_returns_df.columns)
 st.session_state["tickers"] = active_tickers
+
+port_daily_returns_df = daily_returns_df[active_tickers]
+port_clean_prices_df = clean_prices_df[active_tickers]
 
 # Notify if any matrix ticker was missing or dropped
 requested_matrix_tickers = [str(r.get("Ticker", "")).strip().upper() for _, r in edited_matrix_df.iterrows() if str(r.get("Ticker", "")).strip()]
@@ -732,14 +786,17 @@ missing_tickers = [t for t in requested_matrix_tickers if t not in active_ticker
 if missing_tickers:
     st.warning(f"⚠️ Los activos {missing_tickers} no devolvieron datos en el rango seleccionado. Los cálculos se realizan con los {len(active_tickers)} activos disponibles: {active_tickers}.")
 
+# Individual asset Betas
+asset_betas = calculate_asset_betas(port_daily_returns_df, benchmark_returns_series)
+
 # 1. Statistical Modeling
 mu_series = calculate_expected_returns(
-    returns=daily_returns_df,
+    returns=port_daily_returns_df,
     method=return_estimator,
     rf=st.session_state["rf_rate"],
 )
 cov_df, cov_meta = estimate_covariance_matrix(
-    returns=daily_returns_df,
+    returns=port_daily_returns_df,
     method=cov_estimator,
 )
 psd_cov_df, was_repaired, cond_num = ensure_positive_semidefinite(cov_df)
@@ -797,32 +854,47 @@ eq_w_vec = np.ones(len(active_tickers)) / len(active_tickers)
 # Compute comprehensive risk metrics
 metrics_user = compute_portfolio_risk_metrics(
     weights=user_w_norm,
-    daily_returns=daily_returns_df,
+    daily_returns=port_daily_returns_df,
     expected_returns=mu_series,
     cov_matrix=psd_cov_df,
     rf=rf_val,
+    benchmark_returns=benchmark_returns_series,
+    benchmark_ticker=benchmark_symbol,
 )
 metrics_ms = compute_portfolio_risk_metrics(
     weights=ms_res.weights,
-    daily_returns=daily_returns_df,
+    daily_returns=port_daily_returns_df,
     expected_returns=mu_series,
     cov_matrix=psd_cov_df,
     rf=rf_val,
+    benchmark_returns=benchmark_returns_series,
+    benchmark_ticker=benchmark_symbol,
 )
 metrics_gmv = compute_portfolio_risk_metrics(
     weights=gmv_res.weights,
-    daily_returns=daily_returns_df,
+    daily_returns=port_daily_returns_df,
     expected_returns=mu_series,
     cov_matrix=psd_cov_df,
     rf=rf_val,
+    benchmark_returns=benchmark_returns_series,
+    benchmark_ticker=benchmark_symbol,
 )
 metrics_eq = compute_portfolio_risk_metrics(
     weights=eq_w_vec,
-    daily_returns=daily_returns_df,
+    daily_returns=port_daily_returns_df,
     expected_returns=mu_series,
     cov_matrix=psd_cov_df,
     rf=rf_val,
+    benchmark_returns=benchmark_returns_series,
+    benchmark_ticker=benchmark_symbol,
 )
+
+# Compute correlation matrix globally so all tabs (Metrics/Export, Heatmaps, etc.) have access
+d_diag = np.sqrt(np.diag(psd_cov_df.values))
+d_diag_safe = np.where(d_diag == 0.0, 1.0, d_diag)
+corr_mat = psd_cov_df.values / np.outer(d_diag_safe, d_diag_safe)
+np.fill_diagonal(corr_mat, 1.0)
+corr_df = pd.DataFrame(corr_mat, index=psd_cov_df.index, columns=psd_cov_df.columns)
 
 
 # ===========================================================================
@@ -831,12 +903,12 @@ metrics_eq = compute_portfolio_risk_metrics(
 
 tabs = st.tabs([
     "📈 Frontera Eficiente & Optimización",
-    "⚖️ Comparador Multi-Portafolio",
     "🍩 Asignación de Activos",
-    "🧊 Matrices de Riesgo (Correlación / Covarianza)",
+    "📑 Métricas Avanzadas & Exportación",
     "💰 Backtest Histórico & Drawdown",
     "🔮 Proyección Monte Carlo (Conos)",
-    "📑 Métricas Avanzadas & Exportación",
+    "🧊 Matrices de Riesgo (Correlación / Covarianza)",
+    "⚖️ Comparador Multi-Portafolio",
 ])
 
 
@@ -845,6 +917,10 @@ tabs = st.tabs([
 # ---------------------------------------------------------------------------
 with tabs[0]:
     # Top KPI Metrics Cards
+    user_beta_str = f"{metrics_user.beta:.2f}" if metrics_user.beta is not None else "1.00"
+    ms_beta_str = f"{metrics_ms.beta:.2f}" if metrics_ms.beta is not None else "1.00"
+    gmv_beta_str = f"{metrics_gmv.beta:.2f}" if metrics_gmv.beta is not None else "1.00"
+
     kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
     with kpi_col1:
         st.markdown(
@@ -852,7 +928,7 @@ with tabs[0]:
             <div class='metric-card'>
                 <div class='metric-title'>Cartera Usuario (Actual)</div>
                 <div class='metric-value'>{metrics_user.annualized_return:.2%}</div>
-                <div class='metric-subtitle'>Vol: {metrics_user.annualized_volatility:.2%} | Sharpe: {metrics_user.sharpe_ratio:.3f}</div>
+                <div class='metric-subtitle'>Vol: {metrics_user.annualized_volatility:.2%} | Sharpe: {metrics_user.sharpe_ratio:.3f} | Beta: {user_beta_str}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -863,7 +939,7 @@ with tabs[0]:
             <div class='metric-card'>
                 <div class='metric-title'>Máximo Ratio Sharpe (Tangencia)</div>
                 <div class='metric-value' style='color:#00FF66;'>{metrics_ms.annualized_return:.2%}</div>
-                <div class='metric-subtitle'>Vol: {metrics_ms.annualized_volatility:.2%} | Sharpe: {metrics_ms.sharpe_ratio:.3f}</div>
+                <div class='metric-subtitle'>Vol: {metrics_ms.annualized_volatility:.2%} | Sharpe: {metrics_ms.sharpe_ratio:.3f} | Beta: {ms_beta_str}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -874,7 +950,7 @@ with tabs[0]:
             <div class='metric-card'>
                 <div class='metric-title'>Mínima Varianza Global (GMV)</div>
                 <div class='metric-value' style='color:#FF3366;'>{metrics_gmv.annualized_return:.2%}</div>
-                <div class='metric-subtitle'>Vol: {metrics_gmv.annualized_volatility:.2%} | Sharpe: {metrics_gmv.sharpe_ratio:.3f}</div>
+                <div class='metric-subtitle'>Vol: {metrics_gmv.annualized_volatility:.2%} | Sharpe: {metrics_gmv.sharpe_ratio:.3f} | Beta: {gmv_beta_str}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -897,9 +973,342 @@ with tabs[0]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 2: Comparador Multi-Portafolio
+# TAB 2: Asignación de Activos
 # ---------------------------------------------------------------------------
 with tabs[1]:
+    st.markdown("### 🍩 Distribución de Capital por Cartera")
+    col_donut, col_bar = st.columns([1, 1.2])
+
+    with col_donut:
+        fig_donut = plot_asset_allocation(
+            weights={t: float(user_w_norm[i]) for i, t in enumerate(st.session_state["tickers"])},
+            title="Ponderaciones Cartera Usuario",
+        )
+        st.plotly_chart(fig_donut, use_container_width=True)
+
+    with col_bar:
+        comp_weights = {
+            "Usuario": {t: float(user_w_norm[i]) for i, t in enumerate(st.session_state["tickers"])},
+            "Máx Sharpe": {t: float(ms_res.weights[i]) for i, t in enumerate(st.session_state["tickers"])},
+            "GMV": {t: float(gmv_res.weights[i]) for i, t in enumerate(st.session_state["tickers"])},
+            "1/N (Equip.)": {t: float(eq_w_vec[i]) for i, t in enumerate(st.session_state["tickers"])},
+        }
+        fig_bar = plot_allocation_comparison(weights_dict=comp_weights)
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # Allocation breakdown table
+    df_alloc_table = pd.DataFrame(
+        {
+            "Activo / Ticker": st.session_state["tickers"],
+            f"Beta Individual (β vs {benchmark_symbol})": [f"{asset_betas.get(t, 1.0):.2f}" for t in st.session_state["tickers"]],
+            "Cartera Usuario": [f"{w:.2%}" for w in user_w_norm],
+            "Máximo Sharpe": [f"{w:.2%}" for w in ms_res.weights],
+            "Mínima Varianza (GMV)": [f"{w:.2%}" for w in gmv_res.weights],
+            "Equiponderada (1/N)": [f"{w:.2%}" for w in eq_w_vec],
+        }
+    )
+    st.dataframe(df_alloc_table, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 3: Métricas Avanzadas & Exportación
+# ---------------------------------------------------------------------------
+with tabs[2]:
+    st.markdown("### 📑 Tabla Comparativa de Métricas de Riesgo y Rendimiento")
+
+    # Construct Master Metrics DataFrame
+    metrics_summary_dict = {
+        "Retorno Anualizado (Aritmético)": {
+            "Cartera Usuario": f"{metrics_user.annualized_return:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.annualized_return:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.annualized_return:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.annualized_return:.2%}",
+        },
+        "Retorno Compuesto (CAGR)": {
+            "Cartera Usuario": f"{metrics_user.cagr:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cagr:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cagr:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cagr:.2%}",
+        },
+        "Volatilidad Anualizada (Riesgo)": {
+            "Cartera Usuario": f"{metrics_user.annualized_volatility:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.annualized_volatility:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.annualized_volatility:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.annualized_volatility:.2%}",
+        },
+        "Ratio de Sharpe": {
+            "Cartera Usuario": f"{metrics_user.sharpe_ratio:.3f}",
+            "Máximo Sharpe": f"{metrics_ms.sharpe_ratio:.3f}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.sharpe_ratio:.3f}",
+            "Equiponderada (1/N)": f"{metrics_eq.sharpe_ratio:.3f}",
+        },
+        f"Beta (β vs {benchmark_symbol})": {
+            "Cartera Usuario": f"{metrics_user.beta:.2f}" if metrics_user.beta is not None else "N/A",
+            "Máximo Sharpe": f"{metrics_ms.beta:.2f}" if metrics_ms.beta is not None else "N/A",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.beta:.2f}" if metrics_gmv.beta is not None else "N/A",
+            "Equiponderada (1/N)": f"{metrics_eq.beta:.2f}" if metrics_eq.beta is not None else "N/A",
+        },
+        "Alfa de Jensen Anualizada (α)": {
+            "Cartera Usuario": f"{metrics_user.alpha_jensen:.2%}" if metrics_user.alpha_jensen is not None else "N/A",
+            "Máximo Sharpe": f"{metrics_ms.alpha_jensen:.2%}" if metrics_ms.alpha_jensen is not None else "N/A",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.alpha_jensen:.2%}" if metrics_gmv.alpha_jensen is not None else "N/A",
+            "Equiponderada (1/N)": f"{metrics_eq.alpha_jensen:.2%}" if metrics_eq.alpha_jensen is not None else "N/A",
+        },
+        "Coeficiente de Determinación (R²)": {
+            "Cartera Usuario": f"{metrics_user.r_squared:.2%}" if metrics_user.r_squared is not None else "N/A",
+            "Máximo Sharpe": f"{metrics_ms.r_squared:.2%}" if metrics_ms.r_squared is not None else "N/A",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.r_squared:.2%}" if metrics_gmv.r_squared is not None else "N/A",
+            "Equiponderada (1/N)": f"{metrics_eq.r_squared:.2%}" if metrics_eq.r_squared is not None else "N/A",
+        },
+        "Ratio de Sortino": {
+            "Cartera Usuario": f"{metrics_user.sortino_ratio:.3f}",
+            "Máximo Sharpe": f"{metrics_ms.sortino_ratio:.3f}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.sortino_ratio:.3f}",
+            "Equiponderada (1/N)": f"{metrics_eq.sortino_ratio:.3f}",
+        },
+        "Ratio de Calmar": {
+            "Cartera Usuario": f"{metrics_user.calmar_ratio:.3f}",
+            "Máximo Sharpe": f"{metrics_ms.calmar_ratio:.3f}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.calmar_ratio:.3f}",
+            "Equiponderada (1/N)": f"{metrics_eq.calmar_ratio:.3f}",
+        },
+        "Máximo Drawdown (MDD)": {
+            "Cartera Usuario": f"{metrics_user.max_drawdown:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.max_drawdown:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.max_drawdown:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.max_drawdown:.2%}",
+        },
+        "VaR 95% Histórico (1 Día)": {
+            "Cartera Usuario": f"{metrics_user.var_95_hist:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.var_95_hist:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_hist:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.var_95_hist:.2%}",
+        },
+        "VaR 95% Paramétrico (1 Día)": {
+            "Cartera Usuario": f"{metrics_user.var_95_param:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.var_95_param:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_param:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.var_95_param:.2%}",
+        },
+        "CVaR 95% Histórico (Expected Shortfall)": {
+            "Cartera Usuario": f"{metrics_user.cvar_95_hist:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cvar_95_hist:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_hist:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_hist:.2%}",
+        },
+    }
+
+    df_metrics_display = pd.DataFrame(
+        [
+            {"Métrica": k, **v} for k, v in metrics_summary_dict.items()
+        ]
+    )
+    st.dataframe(df_metrics_display, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("### 📥 Centro de Exportación de Resultados")
+
+    # Prepare downloads
+    csv_metrics = export_summary_csv(df_metrics_display)
+    df_weights_raw = pd.DataFrame(
+        {
+            "Ticker": st.session_state["tickers"],
+            "Usuario": user_w_norm,
+            "Max Sharpe": ms_res.weights,
+            "GMV": gmv_res.weights,
+            "Equiponderada": eq_w_vec,
+        }
+    )
+    csv_weights = export_weights_csv(df_weights_raw)
+    csv_corr = export_correlation_csv(corr_df)
+
+    # Excel Workbook bytes
+    excel_bytes = export_full_excel(
+        metrics_dict={"Cartera Usuario": metrics_user, "Máximo Sharpe": metrics_ms, "GMV": metrics_gmv, "Equiponderada": metrics_eq},
+        weights_dict=df_weights_raw,
+        corr_matrix=corr_df,
+        cov_matrix=psd_cov_df,
+        wealth_df=pd.DataFrame({k: v.cumulative_wealth for k, v in [("Usuario", metrics_user), ("Max Sharpe", metrics_ms), ("GMV", metrics_gmv)]}),
+    )
+
+    exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
+    with exp_col1:
+        st.download_button(
+            "📄 Descargar Resumen (CSV)",
+            data=csv_metrics,
+            file_name=f"resumen_metricas_{datetime.date.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with exp_col2:
+        st.download_button(
+            "📊 Descargar Ponderaciones (CSV)",
+            data=csv_weights,
+            file_name=f"ponderaciones_optimas_{datetime.date.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with exp_col3:
+        st.download_button(
+            "🧊 Descargar Correlación (CSV)",
+            data=csv_corr,
+            file_name=f"matriz_correlacion_{datetime.date.today().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with exp_col4:
+        st.download_button(
+            "📗 Reporte Completo Excel (.xlsx)",
+            data=excel_bytes,
+            file_name=f"optimizacion_frontera_eficiente_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# TAB 4: Backtest Histórico & Drawdown
+# ---------------------------------------------------------------------------
+with tabs[3]:
+    st.markdown("### 💰 Evolución Patrimonial ($10,000 USD Base) y Caídas de Valor")
+    ret_dict_backtest = {
+        "Cartera Usuario": port_daily_returns_df.values @ user_w_norm,
+        "Máximo Sharpe": port_daily_returns_df.values @ ms_res.weights,
+        "Mínima Varianza (GMV)": port_daily_returns_df.values @ gmv_res.weights,
+        "Equiponderada (1/N)": port_daily_returns_df.values @ eq_w_vec,
+        f"Benchmark ({benchmark_symbol})": benchmark_returns_series.values,
+    }
+    # Pass Series with DatetimeIndex
+    ret_series_dict = {
+        k: pd.Series(v, index=port_daily_returns_df.index) for k, v in ret_dict_backtest.items()
+    }
+    fig_backtest = plot_historical_backtest(returns_dict=ret_series_dict, initial_capital=10000.0)
+    st.plotly_chart(fig_backtest, use_container_width=True)
+
+    # Drawdown Metrics Table
+    st.markdown("#### 📉 Resumen de Drawdown Histórico")
+    dd_summary = pd.DataFrame(
+        {
+            "Cartera": ["Cartera Usuario", "Máximo Sharpe", "Mínima Varianza (GMV)", "Equiponderada (1/N)"],
+            "Máximo Drawdown": [
+                f"{metrics_user.max_drawdown:.2%}",
+                f"{metrics_ms.max_drawdown:.2%}",
+                f"{metrics_gmv.max_drawdown:.2%}",
+                f"{metrics_eq.max_drawdown:.2%}",
+            ],
+            "Fecha Pico (Peak)": [
+                str(metrics_user.peak_date)[:10],
+                str(metrics_ms.peak_date)[:10],
+                str(metrics_gmv.peak_date)[:10],
+                str(metrics_eq.peak_date)[:10],
+            ],
+            "Fecha Fondo (Valley)": [
+                str(metrics_user.valley_date)[:10],
+                str(metrics_ms.valley_date)[:10],
+                str(metrics_gmv.valley_date)[:10],
+                str(metrics_eq.valley_date)[:10],
+            ],
+            "Días Recuperación": [
+                metrics_user.recovery_days or "En recuperación",
+                metrics_ms.recovery_days or "En recuperación",
+                metrics_gmv.recovery_days or "En recuperación",
+                metrics_eq.recovery_days or "En recuperación",
+            ],
+            "Ratio de Calmar": [
+                f"{metrics_user.calmar_ratio:.3f}",
+                f"{metrics_ms.calmar_ratio:.3f}",
+                f"{metrics_gmv.calmar_ratio:.3f}",
+                f"{metrics_eq.calmar_ratio:.3f}",
+            ],
+        }
+    )
+    st.dataframe(dd_summary, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 5: Proyección Monte Carlo (Conos de Probabilidad)
+# ---------------------------------------------------------------------------
+with tabs[4]:
+    st.markdown("### 🔮 Simulación Estocástica de Trayectorias a Futuro")
+    mc_c1, mc_c2, mc_c3 = st.columns(3)
+    with mc_c1:
+        horizon_years = st.slider("Horizonte de Simulación (Años)", min_value=1, max_value=5, value=3, step=1)
+    with mc_c2:
+        num_sims = st.slider("Número de Trayectorias", min_value=500, max_value=5000, value=2000, step=500)
+    with mc_c3:
+        mc_model = st.selectbox(
+            "Modelo Estocástico",
+            options=["gbm", "bootstrap"],
+            format_func=lambda x: "Movimiento Browniano Geométrico (GBM)" if x == "gbm" else "Bootstrapping Histórico por Bloques",
+        )
+
+    with st.spinner("Ejecutando simulación estocástica multi-activo..."):
+        traj_res = run_trajectory_monte_carlo(
+            expected_returns=mu_series.values,
+            cov_matrix=psd_cov_df.values,
+            weights=user_w_norm,
+            initial_capital=10000.0,
+            years=horizon_years,
+            num_simulations=num_sims,
+            model=mc_model,
+            historical_returns=daily_returns_df.values,
+            seed=42,
+        )
+
+    fig_cones = plot_monte_carlo_cones(
+        trajectory_result=traj_res,
+        user_label="Cartera Usuario",
+        initial_wealth=10000.0,
+    )
+    st.plotly_chart(fig_cones, use_container_width=True)
+
+    # Future wealth scenarios
+    st.markdown("#### 🎯 Escenarios de Capital Final Proyectado ($10,000 USD Inicial)")
+    sc_c1, sc_c2, sc_c3 = st.columns(3)
+    with sc_c1:
+        p5_val = float(traj_res.percentile_5[-1])
+        st.metric("Escenario Adverso (Percentil 5%)", f"${p5_val:,.0f}", f"{(p5_val - 10000)/100:.1f}% Total")
+    with sc_c2:
+        p50_val = float(traj_res.percentile_50[-1])
+        st.metric("Escenario Esperado (Mediana P50)", f"${p50_val:,.0f}", f"{(p50_val - 10000)/100:.1f}% Total")
+    with sc_c3:
+        p95_val = float(traj_res.percentile_95[-1])
+        st.metric("Escenario Favorable (Percentil 95%)", f"${p95_val:,.0f}", f"{(p95_val - 10000)/100:.1f}% Total")
+
+
+# ---------------------------------------------------------------------------
+# TAB 6: Matrices de Riesgo (Correlación / Covarianza)
+# ---------------------------------------------------------------------------
+with tabs[5]:
+    st.markdown("### 🧊 Estructura de Dependencia y Covarianza")
+    col_corr, col_cov = st.columns(2)
+
+    with col_corr:
+        fig_corr = plot_correlation_heatmap(corr_df)
+        st.plotly_chart(fig_corr, use_container_width=True)
+
+    with col_cov:
+        fig_cov = plot_covariance_heatmap(psd_cov_df)
+        st.plotly_chart(fig_cov, use_container_width=True)
+
+    # Diagnostics Box
+    st.markdown("#### 🔬 Diagnósticos Numéricos y Estabilidad")
+    diag_c1, diag_c2, diag_c3, diag_c4 = st.columns(4)
+    with diag_c1:
+        st.metric("Número de Condición", f"{cond_num:.2f}")
+    with diag_c2:
+        st.metric("Shrinkage Intensity (δ*)", f"{cov_meta.get('shrinkage_delta', 0.0) or 0.0:.4f}")
+    with diag_c3:
+        min_eig = float(np.min(np.linalg.eigvalsh(psd_cov_df.values)))
+        st.metric("Autovalor Mínimo (λ_min)", f"{min_eig:.6f}")
+    with diag_c4:
+        st.metric("Reparación Higham PSD", "No requerida" if not was_repaired else "Aplicada ✅")
+
+
+# ---------------------------------------------------------------------------
+# TAB 7: Comparador Multi-Portafolio
+# ---------------------------------------------------------------------------
+with tabs[6]:
     st.markdown("### ⚖️ Comparativa Avanzada entre Múltiples Portafolios")
     st.caption("Compara el rendimiento histórico, la volatilidad, ratios de Sharpe/Sortino y la diversificación de cualquier combinación de carteras.")
 
@@ -1017,6 +1426,8 @@ with tabs[1]:
                 expected_returns=pd.Series(sub_mu, index=active_p_tickers),
                 cov_matrix=pd.DataFrame(sub_cov, index=active_p_tickers, columns=active_p_tickers),
                 rf=rf_val,
+                benchmark_returns=benchmark_returns_series,
+                benchmark_ticker=benchmark_symbol,
             )
             compare_metrics_dict[p_name] = m
             compare_scatter_data[p_name] = {
@@ -1034,6 +1445,8 @@ with tabs[1]:
                 "Retorno Anual": f"{m.annualized_return:.2%}",
                 "Volatilidad": f"{m.annualized_volatility:.2%}",
                 "Ratio Sharpe": f"{m.sharpe_ratio:.3f}",
+                f"Beta (β vs {benchmark_symbol})": f"{m.beta:.2f}" if m.beta is not None else "N/A",
+                "Alfa Jensen (α)": f"{m.alpha_jensen:.2%}" if m.alpha_jensen is not None else "N/A",
                 "Ratio Sortino": f"{m.sortino_ratio:.3f}",
                 "Ratio Calmar": f"{m.calmar_ratio:.3f}",
                 "Máx Drawdown": f"{m.max_drawdown:.2%}",
@@ -1056,321 +1469,3 @@ with tabs[1]:
         st.markdown("#### 🍩 Comparativa de Asignación de Activos entre Portafolios")
         fig_comp_alloc = plot_allocation_comparison(weights_dict=compare_weights_dict)
         st.plotly_chart(fig_comp_alloc, use_container_width=True)
-
-
-# ---------------------------------------------------------------------------
-# TAB 3: Asignación de Activos
-# ---------------------------------------------------------------------------
-with tabs[2]:
-    st.markdown("### 🍩 Distribución de Capital por Cartera")
-    col_donut, col_bar = st.columns([1, 1.2])
-
-    with col_donut:
-        fig_donut = plot_asset_allocation(
-            weights={t: float(user_w_norm[i]) for i, t in enumerate(st.session_state["tickers"])},
-            title="Ponderaciones Cartera Usuario",
-        )
-        st.plotly_chart(fig_donut, use_container_width=True)
-
-    with col_bar:
-        comp_weights = {
-            "Usuario": {t: float(user_w_norm[i]) for i, t in enumerate(st.session_state["tickers"])},
-            "Máx Sharpe": {t: float(ms_res.weights[i]) for i, t in enumerate(st.session_state["tickers"])},
-            "GMV": {t: float(gmv_res.weights[i]) for i, t in enumerate(st.session_state["tickers"])},
-            "1/N (Equip.)": {t: float(eq_w_vec[i]) for i, t in enumerate(st.session_state["tickers"])},
-        }
-        fig_bar = plot_allocation_comparison(weights_dict=comp_weights)
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # Allocation breakdown table
-    df_alloc_table = pd.DataFrame(
-        {
-            "Activo / Ticker": st.session_state["tickers"],
-            "Cartera Usuario": [f"{w:.2%}" for w in user_w_norm],
-            "Máximo Sharpe": [f"{w:.2%}" for w in ms_res.weights],
-            "Mínima Varianza (GMV)": [f"{w:.2%}" for w in gmv_res.weights],
-            "Equiponderada (1/N)": [f"{w:.2%}" for w in eq_w_vec],
-        }
-    )
-    st.dataframe(df_alloc_table, use_container_width=True, hide_index=True)
-
-
-# ---------------------------------------------------------------------------
-# TAB 4: Matrices de Riesgo (Correlación / Covarianza)
-# ---------------------------------------------------------------------------
-with tabs[3]:
-    st.markdown("### 🧊 Estructura de Dependencia y Covarianza")
-    col_corr, col_cov = st.columns(2)
-
-    corr_df = psd_cov_df.copy()
-    d = np.sqrt(np.diag(psd_cov_df.values))
-    corr_mat = psd_cov_df.values / np.outer(d, d)
-    corr_df = pd.DataFrame(corr_mat, index=psd_cov_df.index, columns=psd_cov_df.columns)
-
-    with col_corr:
-        fig_corr = plot_correlation_heatmap(corr_df)
-        st.plotly_chart(fig_corr, use_container_width=True)
-
-    with col_cov:
-        fig_cov = plot_covariance_heatmap(psd_cov_df)
-        st.plotly_chart(fig_cov, use_container_width=True)
-
-    # Diagnostics Box
-    st.markdown("#### 🔬 Diagnósticos Numéricos y Estabilidad")
-    diag_c1, diag_c2, diag_c3, diag_c4 = st.columns(4)
-    with diag_c1:
-        st.metric("Número de Condición", f"{cond_num:.2f}")
-    with diag_c2:
-        st.metric("Shrinkage Intensity (δ*)", f"{cov_meta.get('shrinkage_delta', 0.0) or 0.0:.4f}")
-    with diag_c3:
-        min_eig = float(np.min(np.linalg.eigvalsh(psd_cov_df.values)))
-        st.metric("Autovalor Mínimo (λ_min)", f"{min_eig:.6f}")
-    with diag_c4:
-        st.metric("Reparación Higham PSD", "No requerida" if not was_repaired else "Aplicada ✅")
-
-
-# ---------------------------------------------------------------------------
-# TAB 5: Backtest Histórico & Drawdown
-# ---------------------------------------------------------------------------
-with tabs[4]:
-    st.markdown("### 💰 Evolución Patrimonial ($10,000 USD Base) y Caídas de Valor")
-    ret_dict_backtest = {
-        "Cartera Usuario": daily_returns_df.values @ user_w_norm,
-        "Máximo Sharpe": daily_returns_df.values @ ms_res.weights,
-        "Mínima Varianza (GMV)": daily_returns_df.values @ gmv_res.weights,
-        "Equiponderada (1/N)": daily_returns_df.values @ eq_w_vec,
-    }
-    # Pass Series with DatetimeIndex
-    ret_series_dict = {
-        k: pd.Series(v, index=daily_returns_df.index) for k, v in ret_dict_backtest.items()
-    }
-    fig_backtest = plot_historical_backtest(returns_dict=ret_series_dict, initial_capital=10000.0)
-    st.plotly_chart(fig_backtest, use_container_width=True)
-
-    # Drawdown Metrics Table
-    st.markdown("#### 📉 Resumen de Drawdown Histórico")
-    dd_summary = pd.DataFrame(
-        {
-            "Cartera": ["Cartera Usuario", "Máximo Sharpe", "Mínima Varianza (GMV)", "Equiponderada (1/N)"],
-            "Máximo Drawdown": [
-                f"{metrics_user.max_drawdown:.2%}",
-                f"{metrics_ms.max_drawdown:.2%}",
-                f"{metrics_gmv.max_drawdown:.2%}",
-                f"{metrics_eq.max_drawdown:.2%}",
-            ],
-            "Fecha Pico (Peak)": [
-                str(metrics_user.peak_date)[:10],
-                str(metrics_ms.peak_date)[:10],
-                str(metrics_gmv.peak_date)[:10],
-                str(metrics_eq.peak_date)[:10],
-            ],
-            "Fecha Fondo (Valley)": [
-                str(metrics_user.valley_date)[:10],
-                str(metrics_ms.valley_date)[:10],
-                str(metrics_gmv.valley_date)[:10],
-                str(metrics_eq.valley_date)[:10],
-            ],
-            "Días Recuperación": [
-                metrics_user.recovery_days or "En recuperación",
-                metrics_ms.recovery_days or "En recuperación",
-                metrics_gmv.recovery_days or "En recuperación",
-                metrics_eq.recovery_days or "En recuperación",
-            ],
-            "Ratio de Calmar": [
-                f"{metrics_user.calmar_ratio:.3f}",
-                f"{metrics_ms.calmar_ratio:.3f}",
-                f"{metrics_gmv.calmar_ratio:.3f}",
-                f"{metrics_eq.calmar_ratio:.3f}",
-            ],
-        }
-    )
-    st.dataframe(dd_summary, use_container_width=True, hide_index=True)
-
-
-# ---------------------------------------------------------------------------
-# TAB 6: Proyección Monte Carlo (Conos de Probabilidad)
-# ---------------------------------------------------------------------------
-with tabs[5]:
-    st.markdown("### 🔮 Simulación Estocástica de Trayectorias a Futuro")
-    mc_c1, mc_c2, mc_c3 = st.columns(3)
-    with mc_c1:
-        horizon_years = st.slider("Horizonte de Simulación (Años)", min_value=1, max_value=5, value=3, step=1)
-    with mc_c2:
-        num_sims = st.slider("Número de Trayectorias", min_value=500, max_value=5000, value=2000, step=500)
-    with mc_c3:
-        mc_model = st.selectbox(
-            "Modelo Estocástico",
-            options=["gbm", "bootstrap"],
-            format_func=lambda x: "Movimiento Browniano Geométrico (GBM)" if x == "gbm" else "Bootstrapping Histórico por Bloques",
-        )
-
-    with st.spinner("Ejecutando simulación estocástica multi-activo..."):
-        traj_res = run_trajectory_monte_carlo(
-            expected_returns=mu_series.values,
-            cov_matrix=psd_cov_df.values,
-            weights=user_w_norm,
-            initial_capital=10000.0,
-            years=horizon_years,
-            num_simulations=num_sims,
-            model=mc_model,
-            historical_returns=daily_returns_df.values,
-            seed=42,
-        )
-
-    fig_cones = plot_monte_carlo_cones(
-        trajectory_result=traj_res,
-        user_label="Cartera Usuario",
-        initial_wealth=10000.0,
-    )
-    st.plotly_chart(fig_cones, use_container_width=True)
-
-    # Future wealth scenarios
-    st.markdown("#### 🎯 Escenarios de Capital Final Proyectado ($10,000 USD Inicial)")
-    sc_c1, sc_c2, sc_c3 = st.columns(3)
-    with sc_c1:
-        p5_val = float(traj_res.percentile_5[-1])
-        st.metric("Escenario Adverso (Percentil 5%)", f"${p5_val:,.0f}", f"{(p5_val - 10000)/100:.1f}% Total")
-    with sc_c2:
-        p50_val = float(traj_res.percentile_50[-1])
-        st.metric("Escenario Esperado (Mediana P50)", f"${p50_val:,.0f}", f"{(p50_val - 10000)/100:.1f}% Total")
-    with sc_c3:
-        p95_val = float(traj_res.percentile_95[-1])
-        st.metric("Escenario Favorable (Percentil 95%)", f"${p95_val:,.0f}", f"{(p95_val - 10000)/100:.1f}% Total")
-
-
-# ---------------------------------------------------------------------------
-# TAB 7: Métricas Avanzadas & Exportación
-# ---------------------------------------------------------------------------
-with tabs[6]:
-    st.markdown("### 📑 Tabla Comparativa de Métricas de Riesgo y Rendimiento")
-
-    # Construct Master Metrics DataFrame
-    metrics_summary_dict = {
-        "Retorno Anualizado (Aritmético)": {
-            "Cartera Usuario": f"{metrics_user.annualized_return:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.annualized_return:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.annualized_return:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.annualized_return:.2%}",
-        },
-        "Retorno Compuesto (CAGR)": {
-            "Cartera Usuario": f"{metrics_user.cagr:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.cagr:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.cagr:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.cagr:.2%}",
-        },
-        "Volatilidad Anualizada (Riesgo)": {
-            "Cartera Usuario": f"{metrics_user.annualized_volatility:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.annualized_volatility:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.annualized_volatility:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.annualized_volatility:.2%}",
-        },
-        "Ratio de Sharpe": {
-            "Cartera Usuario": f"{metrics_user.sharpe_ratio:.3f}",
-            "Máximo Sharpe": f"{metrics_ms.sharpe_ratio:.3f}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.sharpe_ratio:.3f}",
-            "Equiponderada (1/N)": f"{metrics_eq.sharpe_ratio:.3f}",
-        },
-        "Ratio de Sortino": {
-            "Cartera Usuario": f"{metrics_user.sortino_ratio:.3f}",
-            "Máximo Sharpe": f"{metrics_ms.sortino_ratio:.3f}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.sortino_ratio:.3f}",
-            "Equiponderada (1/N)": f"{metrics_eq.sortino_ratio:.3f}",
-        },
-        "Ratio de Calmar": {
-            "Cartera Usuario": f"{metrics_user.calmar_ratio:.3f}",
-            "Máximo Sharpe": f"{metrics_ms.calmar_ratio:.3f}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.calmar_ratio:.3f}",
-            "Equiponderada (1/N)": f"{metrics_eq.calmar_ratio:.3f}",
-        },
-        "Máximo Drawdown (MDD)": {
-            "Cartera Usuario": f"{metrics_user.max_drawdown:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.max_drawdown:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.max_drawdown:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.max_drawdown:.2%}",
-        },
-        "VaR 95% Histórico (1 Día)": {
-            "Cartera Usuario": f"{metrics_user.var_95_hist:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.var_95_hist:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_hist:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.var_95_hist:.2%}",
-        },
-        "VaR 95% Paramétrico (1 Día)": {
-            "Cartera Usuario": f"{metrics_user.var_95_param:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.var_95_param:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_param:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.var_95_param:.2%}",
-        },
-        "CVaR 95% Histórico (Expected Shortfall)": {
-            "Cartera Usuario": f"{metrics_user.cvar_95_hist:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.cvar_95_hist:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_hist:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_hist:.2%}",
-        },
-    }
-
-    df_metrics_display = pd.DataFrame(
-        [
-            {"Métrica": k, **v} for k, v in metrics_summary_dict.items()
-        ]
-    )
-    st.dataframe(df_metrics_display, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.markdown("### 📥 Centro de Exportación de Resultados")
-
-    # Prepare downloads
-    csv_metrics = export_summary_csv(df_metrics_display)
-    df_weights_raw = pd.DataFrame(
-        {
-            "Ticker": st.session_state["tickers"],
-            "Usuario": user_w_norm,
-            "Max Sharpe": ms_res.weights,
-            "GMV": gmv_res.weights,
-            "Equiponderada": eq_w_vec,
-        }
-    )
-    csv_weights = export_weights_csv(df_weights_raw)
-    csv_corr = export_correlation_csv(corr_df)
-
-    # Excel Workbook bytes
-    excel_bytes = export_full_excel(
-        metrics_dict={"Cartera Usuario": metrics_user, "Máximo Sharpe": metrics_ms, "GMV": metrics_gmv, "Equiponderada": metrics_eq},
-        weights_dict=df_weights_raw,
-        corr_matrix=corr_df,
-        cov_matrix=psd_cov_df,
-        wealth_df=pd.DataFrame({k: v.cumulative_wealth for k, v in [("Usuario", metrics_user), ("Max Sharpe", metrics_ms), ("GMV", metrics_gmv)]}),
-    )
-
-    exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
-    with exp_col1:
-        st.download_button(
-            "📄 Descargar Resumen (CSV)",
-            data=csv_metrics,
-            file_name=f"resumen_metricas_{datetime.date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with exp_col2:
-        st.download_button(
-            "📊 Descargar Ponderaciones (CSV)",
-            data=csv_weights,
-            file_name=f"ponderaciones_optimas_{datetime.date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with exp_col3:
-        st.download_button(
-            "🧊 Descargar Correlación (CSV)",
-            data=csv_corr,
-            file_name=f"matriz_correlacion_{datetime.date.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-    with exp_col4:
-        st.download_button(
-            "📗 Reporte Completo Excel (.xlsx)",
-            data=excel_bytes,
-            file_name=f"optimizacion_frontera_eficiente_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )

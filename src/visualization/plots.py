@@ -524,6 +524,16 @@ def plot_correlation_heatmap(
     # Format annotations
     text_annotations = [[f"{val:.2f}" for val in row] for row in mat]
 
+    # High-contrast dark diverging scale: blue (-1) -> dark slate (0) -> crimson (+1)
+    # Ensures white text (#FFFFFF) has ultra-clear visibility across the entire range
+    corr_colorscale = [
+        [0.0, "#0d3b66"],   # Deep Blue (-1.0)
+        [0.25, "#1f4e79"],  # Muted Blue (-0.5)
+        [0.5, "#161b26"],   # Dark Slate (0.0 - High Contrast with White Text)
+        [0.75, "#8b2635"],  # Muted Crimson (+0.5)
+        [1.0, "#d90429"],   # Vivid Crimson (+1.0)
+    ]
+
     fig = go.Figure(
         data=go.Heatmap(
             z=mat,
@@ -532,10 +542,10 @@ def plot_correlation_heatmap(
             zmin=-1.0,
             zmax=1.0,
             zmid=0.0,
-            colorscale="RdBu_r",
+            colorscale=corr_colorscale,
             text=text_annotations,
             texttemplate="%{text}",
-            textfont=dict(size=12, color="white"),
+            textfont=dict(size=12, color="#FFFFFF", family="Arial, sans-serif"),
             colorbar=dict(
                 title=dict(text="Correlación (ρ)", font=dict(color=THEME_DARK["font_color"])),
                 tickfont=dict(color=THEME_DARK["font_color"]),
@@ -590,15 +600,22 @@ def plot_covariance_heatmap(
 
     text_annotations = [[f"{val:.4f}" for val in row] for row in mat]
 
+    cov_colorscale = [
+        [0.0, "#0e1117"],
+        [0.3, "#102a43"],
+        [0.6, "#1f4e79"],
+        [1.0, "#00875a"],
+    ]
+
     fig = go.Figure(
         data=go.Heatmap(
             z=mat,
             x=labels,
             y=labels,
-            colorscale="Viridis",
+            colorscale=cov_colorscale,
             text=text_annotations,
             texttemplate="%{text}",
-            textfont=dict(size=11, color="white"),
+            textfont=dict(size=11, color="#FFFFFF", family="Arial, sans-serif"),
             colorbar=dict(
                 title=dict(text="Covarianza Anual", font=dict(color=THEME_DARK["font_color"])),
                 tickfont=dict(color=THEME_DARK["font_color"]),

@@ -4,9 +4,12 @@ Risk Analytics, Portfolio Performance Metrics & Drawdown Engine.
 
 from src.analytics.risk_metrics import (
     PortfolioRiskMetrics,
+    calculate_asset_betas,
+    calculate_beta,
     calculate_calmar_ratio,
     calculate_cvar_95,
     calculate_drawdown_series,
+    calculate_jensen_alpha,
     calculate_max_drawdown,
     calculate_portfolio_returns,
     calculate_sortino_ratio,
@@ -20,6 +23,9 @@ from src.analytics.risk_metrics import (
 __all__ = [
     "PortfolioRiskMetrics",
     "calculate_portfolio_returns",
+    "calculate_beta",
+    "calculate_jensen_alpha",
+    "calculate_asset_betas",
     "calculate_drawdown_series",
     "compute_drawdown_series",
     "calculate_max_drawdown",
