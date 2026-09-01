@@ -50,6 +50,12 @@ from src.optimization import (
     optimize_global_minimum_variance,
     optimize_maximum_sharpe,
 )
+from src.auth.google_auth import (
+    get_active_user,
+    get_active_user_id,
+    init_auth_session,
+    render_user_auth_sidebar,
+)
 from src.presets import (
     PRESETS,
     delete_custom_portfolio,
@@ -213,6 +219,7 @@ def _init_session_state() -> None:
 
 
 _init_session_state()
+init_auth_session()
 
 
 def _resize_portfolio_matrix(target_n: int) -> None:
@@ -280,7 +287,7 @@ def _apply_preset(preset_key: str) -> None:
 
 def _load_saved_portfolio_to_matrix(portfolio_id: str) -> None:
     """Load a custom saved portfolio into session state and matrix."""
-    saved = load_saved_portfolios()
+    saved = load_saved_portfolios(get_active_user_id())
     if portfolio_id not in saved:
         return
     p = saved[portfolio_id]
@@ -429,6 +436,7 @@ def _apply_equal_weights() -> None:
 # ===========================================================================
 
 with st.sidebar:
+    render_user_auth_sidebar()
     st.markdown("## ⚙️ Configuración Cuantitativa")
     st.caption("Motor de Modelado y Frontera de Markowitz")
     st.markdown("---")
@@ -555,9 +563,13 @@ with cols_p[4]:
 # 4.5. Custom Portfolio Persistence Manager (Save, Load, Edit, Delete)
 # ===========================================================================
 
-saved_portfolios_dict = load_saved_portfolios()
+active_user = get_active_user()
+active_uid = get_active_user_id()
+saved_portfolios_dict = load_saved_portfolios(active_uid)
 
-with st.expander(f"💾 Mis Portafolios Guardados ({len(saved_portfolios_dict)} disponibles)", expanded=False):
+user_badge_title = f" ({active_user['name']} - {len(saved_portfolios_dict)} disponibles)" if active_user else f" (Modo Invitado - {len(saved_portfolios_dict)} disponibles)"
+
+with st.expander(f"💾 Mis Portafolios Guardados{user_badge_title}", expanded=False):
     col_save_p, col_load_p = st.columns(2)
     with col_save_p:
         st.markdown("##### 💾 Guardar Composición Actual")
@@ -570,6 +582,7 @@ with st.expander(f"💾 Mis Portafolios Guardados ({len(saved_portfolios_dict)} 
                     tickers=st.session_state["tickers"],
                     weights=st.session_state["weights"],
                     description=save_p_desc,
+                    user_id=active_uid,
                 )
                 st.success(f"¡Portafolio '{save_p_name}' guardado exitosamente!")
                 st.rerun()
@@ -601,12 +614,13 @@ with st.expander(f"💾 Mis Portafolios Guardados ({len(saved_portfolios_dict)} 
                         weights=st.session_state["weights"],
                         description=p_selected.get("description", ""),
                         portfolio_id=selected_saved_id,
+                        user_id=active_uid,
                     )
                     st.success(f"¡Portafolio '{p_selected['name']}' actualizado!")
                     st.rerun()
             with c_btn_del:
                 if st.button("🗑️ Eliminar", use_container_width=True, key="btn_del_saved_portfolio", help="Elimina este portafolio guardado"):
-                    delete_custom_portfolio(selected_saved_id)
+                    delete_custom_portfolio(selected_saved_id, user_id=active_uid)
                     st.success("Portafolio eliminado.")
                     st.rerun()
         else:
@@ -616,7 +630,7 @@ with st.expander(f"💾 Mis Portafolios Guardados ({len(saved_portfolios_dict)} 
     st.markdown("---")
     c_exp_json, c_imp_json = st.columns(2)
     with c_exp_json:
-        json_backup_str = export_portfolios_json()
+        json_backup_str = export_portfolios_json(user_id=active_uid)
         st.download_button(
             "📤 Exportar Backup de Portafolios (JSON)",
             data=json_backup_str,
@@ -629,7 +643,7 @@ with st.expander(f"💾 Mis Portafolios Guardados ({len(saved_portfolios_dict)} 
         uploaded_json = st.file_uploader("📥 Importar Backup JSON", type=["json"], key="import_p_json_uploader")
         if uploaded_json is not None:
             try:
-                imported_count = import_portfolios_json(uploaded_json.read().decode("utf-8"))
+                imported_count = import_portfolios_json(uploaded_json.read().decode("utf-8"), user_id=active_uid)
                 st.success(f"¡{imported_count} portafolios importados!")
                 st.rerun()
             except Exception as e:
@@ -1345,7 +1359,7 @@ with tabs[6]:
         }
 
     # Add user saved custom portfolios
-    saved_p_map = load_saved_portfolios()
+    saved_p_map = load_saved_portfolios(get_active_user_id())
     for s_id, s_val in saved_p_map.items():
         all_compare_options[f"📁 {s_val['name']}"] = {
             "name": s_val["name"],

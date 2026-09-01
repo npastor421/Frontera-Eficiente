@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit Tests for Custom Portfolio Persistence Storage and Comparison Visualizer.
 """
 
@@ -16,9 +16,9 @@ from src.visualization.plots import plot_portfolio_comparison_scatter
 
 
 def test_save_load_delete_custom_portfolio(tmp_path, monkeypatch):
-    test_storage_file = tmp_path / "test_user_portfolios.json"
     import src.presets.storage as storage_mod
-    monkeypatch.setattr(storage_mod, "STORAGE_FILE", test_storage_file)
+    monkeypatch.setattr(storage_mod, "PORTFOLIOS_DIR", tmp_path)
+    monkeypatch.setattr(storage_mod, "LEGACY_STORAGE_FILE", tmp_path / "non_existent.json")
 
     # 1. Initial state is empty
     assert load_saved_portfolios() == {}

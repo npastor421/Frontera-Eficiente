@@ -103,5 +103,37 @@
     },
     "updated_at": "2026-08-31T12:52:35.386224",
     "created_at": "2026-08-31T12:52:35.386224"
+  },
+  "cartera_alfa": {
+    "id": "cartera_alfa",
+    "name": "Cartera Alfa",
+    "description": "",
+    "tickers": [
+      "SPY",
+      "TLT"
+    ],
+    "weights": {
+      "SPY": 0.6,
+      "TLT": 0.4
+    },
+    "updated_at": "2026-09-01T12:43:55.285909",
+    "created_at": "2026-09-01T12:43:55.285909"
+  },
+  "cartera_beta": {
+    "id": "cartera_beta",
+    "name": "Cartera Beta",
+    "description": "",
+    "tickers": [
+      "AAPL",
+      "MSFT",
+      "NVDA"
+    ],
+    "weights": {
+      "AAPL": 0.33,
+      "MSFT": 0.33,
+      "NVDA": 0.34
+    },
+    "updated_at": "2026-09-01T12:43:55.310422",
+    "created_at": "2026-09-01T12:43:55.310422"
   }
 }
