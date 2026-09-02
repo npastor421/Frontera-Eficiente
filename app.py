@@ -817,6 +817,17 @@ psd_cov_df, was_repaired, cond_num = ensure_positive_semidefinite(cov_df)
 
 # 2. Optimization Engine (Max Sharpe & GMV)
 rf_val = float(st.session_state["rf_rate"])
+
+# Individual asset Sharpe ratios
+asset_sharpes = {}
+for t in st.session_state["tickers"]:
+    vol_i = float(np.sqrt(psd_cov_df.loc[t, t])) if t in psd_cov_df.index else 0.0
+    mu_i = float(mu_series[t]) if t in mu_series.index else rf_val
+    if vol_i > 1e-6:
+        asset_sharpes[t] = (mu_i - rf_val) / vol_i
+    else:
+        asset_sharpes[t] = 0.0
+
 ms_res = optimize_maximum_sharpe(
     expected_returns=mu_series.values,
     cov_matrix=psd_cov_df.values,
@@ -1015,6 +1026,7 @@ with tabs[1]:
         {
             "Activo / Ticker": st.session_state["tickers"],
             f"Beta Individual (β vs {benchmark_symbol})": [f"{asset_betas.get(t, 1.0):.2f}" for t in st.session_state["tickers"]],
+            "Sharpe Individual": [f"{asset_sharpes.get(t, 0.0):.3f}" for t in st.session_state["tickers"]],
             "Cartera Usuario": [f"{w:.2%}" for w in user_w_norm],
             "Máximo Sharpe": [f"{w:.2%}" for w in ms_res.weights],
             "Mínima Varianza (GMV)": [f"{w:.2%}" for w in gmv_res.weights],
