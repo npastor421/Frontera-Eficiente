@@ -35,8 +35,8 @@ def get_storage_path(user_id: Optional[str] = None) -> Path:
     slug = _sanitize_user_id(user_id)
     target_file = PORTFOLIOS_DIR / f"{slug}.json"
     
-    # Auto-migrate legacy file to guest if needed
-    if slug == "guest" and not target_file.exists() and LEGACY_STORAGE_FILE.exists():
+    # If authenticated user logs in and has no file yet, migrate legacy personal portfolios
+    if slug != "guest" and not target_file.exists() and LEGACY_STORAGE_FILE.exists():
         try:
             target_file.write_text(LEGACY_STORAGE_FILE.read_text(encoding="utf-8"), encoding="utf-8")
         except Exception:
