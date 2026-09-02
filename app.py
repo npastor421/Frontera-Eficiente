@@ -27,6 +27,7 @@ from src.analytics.risk_metrics import (
     calculate_jensen_alpha,
     compute_portfolio_risk_metrics,
 )
+from src.data.broker_parser import parse_broker_holdings
 from src.data.cleaner import clean_and_align_prices
 from src.data.loader import fetch_asset_data, load_manual_file, validate_tickers
 from src.export.exporter import (
@@ -648,6 +649,75 @@ with st.expander(f"💾 Mis Portafolios Guardados{user_badge_title}", expanded=F
                 st.rerun()
             except Exception as e:
                 st.error(f"Error importando archivo JSON: {e}")
+
+# ===========================================================================
+# 4.6. Broker Holdings Report Importer (Excel / CSV: Balanz, PPI, IOL, Bull Market)
+# ===========================================================================
+
+with st.expander("📊 Importar Tenencias desde Excel / CSV de Broker (Balanz, PPI, IOL, Bull Market)", expanded=False):
+    st.caption("Sube el archivo Excel (`.xlsx`, `.xls`) o CSV exportado desde tu broker (ej. Balanz 'Mis Instrumentos', PPI, Bull Market, IOL). El motor detectará automáticamente tickers, tipos de activo (CEDEARs, Acciones, Fondos, Bonos) y sus ponderaciones porcentuales.")
+    
+    col_up_mode, col_up_file = st.columns([1.2, 2.0])
+    with col_up_mode:
+        broker_mode = st.radio(
+            "Modo de Mapeo de Tickers:",
+            options=["🌐 Dólares / Subyacente Global (Recomendado)", "🇦🇷 Pesos / BYMA (.BA)"],
+            index=0,
+            help="Global: Mapea CEDEARs y ADRs a cotización en USD (ej. GOOGL, YPF, ITUB). BYMA: Mapea con sufijo .BA para cotización en Pesos (ej. GOOGL.BA, YPFD.BA).",
+            key="broker_import_mode_radio",
+        )
+        mode_val = "global_usd" if "Dólares" in broker_mode else "byma_ars"
+    
+    with col_up_file:
+        broker_file = st.file_uploader(
+            "Seleccionar reporte de tenencias (.xlsx, .xls, .csv)",
+            type=["xlsx", "xls", "csv"],
+            key="broker_holdings_uploader",
+        )
+    
+    if broker_file is not None:
+        try:
+            report = parse_broker_holdings(broker_file.read(), filename=broker_file.name, mode=mode_val)
+            st.success(f"✅ Se detectaron exitosamente **{report.instruments_count} instrumentos** (Valuación total: {report.currency} ${report.total_valuation:,.2f})")
+            
+            # Show summary badges
+            breakdown_text = " | ".join([f"**{k}:** {v}" for k, v in report.by_type_breakdown.items()])
+            st.markdown(f"<div style='font-size: 13px; color: #A0AEC0; margin-bottom: 8px;'>Desglose por tipo: {breakdown_text}</div>", unsafe_allow_html=True)
+            
+            # Preview table
+            st.dataframe(report.table_df, use_container_width=True, hide_index=True)
+            
+            col_apply_brk, col_save_brk = st.columns([1.5, 2.0])
+            with col_apply_brk:
+                if st.button("🚀 Cargar Cartera en el Optimizador", use_container_width=True, key="btn_apply_broker_portfolio"):
+                    n_b = len(report.tickers)
+                    st.session_state["num_assets"] = n_b
+                    st.session_state["num_assets_selector"] = n_b
+                    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
+                    st.session_state["tickers"] = report.tickers
+                    st.session_state["weights"] = report.weights
+                    st.session_state["portfolio_matrix_df"] = pd.DataFrame({
+                        "Ticker": report.tickers,
+                        "Ponderación (%)": [report.weights_pct.get(t, 0.0) for t in report.tickers],
+                    })
+                    st.session_state["active_preset_name"] = f"Broker ({broker_file.name[:15]}...)"
+                    st.success("¡Portafolio cargado en la matriz principal!")
+                    st.rerun()
+            with col_save_brk:
+                today_str = datetime.date.today().strftime('%d/%m/%Y')
+                broker_save_name = st.text_input("Nombre para guardar en 'Mis Portafolios'", value=f"Cartera Broker {today_str}", key="broker_save_name_input")
+                if st.button("💾 Guardar Directamente como Portafolio", use_container_width=True, key="btn_save_direct_broker"):
+                    save_custom_portfolio(
+                        name=broker_save_name,
+                        tickers=report.tickers,
+                        weights=report.weights,
+                        description=f"Importado de reporte broker ({report.instruments_count} activos)",
+                        user_id=active_uid,
+                    )
+                    st.success(f"¡Portafolio '{broker_save_name}' guardado en tus portafolios!")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"Error procesando el reporte del broker: {e}")
 
 st.markdown("---")
 
