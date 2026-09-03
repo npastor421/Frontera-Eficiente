@@ -16,6 +16,7 @@ from src.analytics.risk_metrics import (
     calculate_var_95,
     compute_drawdown_series,
     compute_historical_var_cvar,
+    compute_horizon_var_cvar,
     compute_parametric_var_cvar,
     compute_portfolio_risk_metrics,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "calculate_sortino_ratio",
     "calculate_calmar_ratio",
     "compute_historical_var_cvar",
+    "compute_horizon_var_cvar",
     "compute_parametric_var_cvar",
     "calculate_var_95",
     "calculate_cvar_95",

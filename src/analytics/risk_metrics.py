@@ -42,6 +42,10 @@ class PortfolioRiskMetrics:
     var_95_param: float
     cvar_95_hist: float
     cvar_95_param: float
+    var_95_monthly: float = 0.0
+    cvar_95_monthly: float = 0.0
+    var_95_annual: float = 0.0
+    cvar_95_annual: float = 0.0
     beta: Optional[float] = None
     alpha_jensen: Optional[float] = None
     r_squared: Optional[float] = None
@@ -431,6 +435,68 @@ def compute_parametric_var_cvar(
     return float(var_param), float(cvar_param)
 
 
+def compute_horizon_var_cvar(
+    daily_returns: Union[pd.Series, np.ndarray],
+    horizon_days: int = 21,
+    alpha: float = 0.05,
+    method: str = "historical",
+) -> Tuple[float, float]:
+    """
+    Calculate Value at Risk (VaR) and Conditional VaR (CVaR / Expected Shortfall)
+    for multi-day investment horizons (e.g. 21 days for monthly, 252 days for annual).
+
+    Parameters
+    ----------
+    daily_returns : pd.Series | np.ndarray
+        Historical daily return series.
+    horizon_days : int, default 21
+        Horizon in trading days (21 for ~1 month, 63 for ~1 quarter, 252 for ~1 year).
+    alpha : float, default 0.05
+        Tail risk significance level (e.g. 0.05 for 95% confidence).
+    method : str, default 'historical'
+        'historical' (uses compounded rolling returns when N >= 2*H, fallback to square-root-of-time)
+        or 'parametric' (analytical Gaussian scaling with drift).
+
+    Returns
+    -------
+    Tuple[float, float]
+        (var_95, cvar_95) as positive percentage values.
+    """
+    arr = np.asarray(daily_returns, dtype=np.float64).ravel()
+    t_days = len(arr)
+    if t_days == 0:
+        return 0.0, 0.0
+
+    daily_mu = float(np.mean(arr))
+    daily_sigma = float(np.std(arr, ddof=1)) if t_days > 1 else 0.0
+
+    # Parametric Gaussian baseline
+    z = float(stats.norm.ppf(1.0 - alpha))
+    phi_z = float(stats.norm.pdf(z))
+    sigma_h = daily_sigma * np.sqrt(horizon_days)
+    mu_h = daily_mu * horizon_days
+    var_param = max(0.0, z * sigma_h - mu_h)
+    cvar_param = max(var_param, (phi_z / alpha) * sigma_h - mu_h)
+
+    if method.lower().startswith("param"):
+        return float(var_param), float(cvar_param)
+
+    # Historical Empirical Method (via compounded rolling returns)
+    if t_days >= 2 * horizon_days:
+        cum_w = np.cumprod(1.0 + arr)
+        roll_rets = (cum_w[horizon_days:] / cum_w[:-horizon_days]) - 1.0
+        var_hist, cvar_hist = compute_historical_var_cvar(roll_rets, alpha=alpha)
+        return float(var_hist), float(cvar_hist)
+
+    # Fallback to Basel square-root of time scaling of daily historical VaR/CVaR
+    var_daily_hist, cvar_daily_hist = compute_historical_var_cvar(arr, alpha=alpha)
+    scale = np.sqrt(horizon_days)
+    drift = daily_mu * (horizon_days - scale)
+    var_scaled = max(0.0, var_daily_hist * scale - drift)
+    cvar_scaled = max(var_scaled, cvar_daily_hist * scale - drift)
+    return float(var_scaled), float(cvar_scaled)
+
+
 def calculate_var_95(
     returns: Union[pd.Series, np.ndarray],
     method: str = "historical",
@@ -704,13 +770,17 @@ def compute_portfolio_risk_metrics(
     # 9. Calmar Ratio
     calmar_ratio = calculate_calmar_ratio(cagr, max_dd)
 
-    # 10. VaR & CVaR (Historical and Parametric)
+    # 10. VaR & CVaR (Historical and Parametric Daily)
     var_95_hist, cvar_95_hist = compute_historical_var_cvar(ret_arr, alpha=0.05)
 
     # Parametric: using daily mean & daily vol
     daily_mu = float(np.mean(ret_arr))
     daily_sigma = float(np.std(ret_arr, ddof=1)) if t_days > 1 else 0.0
     var_95_param, cvar_95_param = compute_parametric_var_cvar(daily_mu, daily_sigma, alpha=0.05)
+
+    # 10.1 Multi-Horizon VaR & CVaR (Monthly 21d and Annual 252d)
+    var_95_monthly, cvar_95_monthly = compute_horizon_var_cvar(ret_arr, horizon_days=21, alpha=0.05)
+    var_95_annual, cvar_95_annual = compute_horizon_var_cvar(ret_arr, horizon_days=ann_factor, alpha=0.05)
 
     # 11. Beta & Alpha Benchmark Analytics
     port_beta = None
@@ -746,6 +816,10 @@ def compute_portfolio_risk_metrics(
         var_95_param=var_95_param,
         cvar_95_hist=cvar_95_hist,
         cvar_95_param=cvar_95_param,
+        var_95_monthly=var_95_monthly,
+        cvar_95_monthly=cvar_95_monthly,
+        var_95_annual=var_95_annual,
+        cvar_95_annual=cvar_95_annual,
         beta=port_beta,
         alpha_jensen=jensen_alpha,
         r_squared=r_squared,

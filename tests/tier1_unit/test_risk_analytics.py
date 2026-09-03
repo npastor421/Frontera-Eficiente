@@ -17,6 +17,7 @@ try:
     from src.analytics.risk_metrics import (
         compute_drawdown_series,
         compute_historical_var_cvar,
+        compute_horizon_var_cvar,
         compute_parametric_var_cvar,
         compute_portfolio_risk_metrics,
     )
@@ -109,6 +110,10 @@ def test_compute_portfolio_risk_metrics_structure(sample_returns_df):
         "var_95_hist",
         "var_95_param",
         "cvar_95_hist",
+        "var_95_monthly",
+        "cvar_95_monthly",
+        "var_95_annual",
+        "cvar_95_annual",
     ]
 
     for key in required_keys:
@@ -135,3 +140,25 @@ def test_sortino_ratio_downside_deviation(sample_returns_df):
     # Sortino ratio is defined and non-zero for active return series
     assert "sortino_ratio" in metrics
     assert not np.isnan(metrics["sortino_ratio"])
+
+
+def test_multihorizon_var_cvar_scaling_and_coherence(sample_returns_df):
+    """Verify Monthly and Annual VaR/CVaR maintain coherent risk properties (CVaR >= VaR)."""
+    port_returns = sample_returns_df.mean(axis=1)
+
+    # Monthly (21d)
+    var_m, cvar_m = compute_horizon_var_cvar(port_returns, horizon_days=21, alpha=0.05)
+    assert var_m >= 0.0
+    assert cvar_m >= var_m - 1e-9
+
+    # Annual (252d)
+    var_a, cvar_a = compute_horizon_var_cvar(port_returns, horizon_days=252, alpha=0.05)
+    assert var_a >= 0.0
+    assert cvar_a >= var_a - 1e-9
+
+    # Scale check: longer horizon implies larger risk under standard drift
+    # Annual risk is typically larger than daily risk
+    var_d, _ = compute_historical_var_cvar(port_returns, alpha=0.05)
+    assert var_m >= var_d
+    assert var_a >= var_m
+

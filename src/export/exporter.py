@@ -149,8 +149,12 @@ _METRIC_LABELS_ES = {
     "r_squared": "Coeficiente de Determinación (R²)",
     "max_drawdown": "Máximo Drawdown (MDD)",
     "var_95_hist": "VaR 95% Histórico (1 Día)",
+    "cvar_95_hist": "CVaR 95% Histórico (1 Día)",
+    "var_95_monthly": "VaR 95% Mensual (21 Días)",
+    "cvar_95_monthly": "CVaR 95% Mensual (21 Días)",
+    "var_95_annual": "VaR 95% Anual (252 Días)",
+    "cvar_95_annual": "CVaR 95% Anual (252 Días)",
     "var_95_param": "VaR 95% Paramétrico (1 Día)",
-    "cvar_95_hist": "CVaR 95% Histórico (Expected Shortfall)",
     "cvar_95_param": "CVaR 95% Paramétrico",
     "recovery_days": "Días de Recuperación de Drawdown",
 }

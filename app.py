@@ -1282,17 +1282,47 @@ with tabs[2]:
             "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_hist:.2%}",
             "Equiponderada (1/N)": f"{metrics_eq.var_95_hist:.2%}",
         },
+        "CVaR 95% Histórico (1 Día)": {
+            "Cartera Usuario": f"{metrics_user.cvar_95_hist:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cvar_95_hist:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_hist:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_hist:.2%}",
+        },
+        "VaR 95% Mensual (21 Días)": {
+            "Cartera Usuario": f"{metrics_user.var_95_monthly:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.var_95_monthly:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_monthly:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.var_95_monthly:.2%}",
+        },
+        "CVaR 95% Mensual (21 Días)": {
+            "Cartera Usuario": f"{metrics_user.cvar_95_monthly:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cvar_95_monthly:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_monthly:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_monthly:.2%}",
+        },
+        "VaR 95% Anual (252 Días)": {
+            "Cartera Usuario": f"{metrics_user.var_95_annual:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.var_95_annual:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_annual:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.var_95_annual:.2%}",
+        },
+        "CVaR 95% Anual (252 Días)": {
+            "Cartera Usuario": f"{metrics_user.cvar_95_annual:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cvar_95_annual:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_annual:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_annual:.2%}",
+        },
         "VaR 95% Paramétrico (1 Día)": {
             "Cartera Usuario": f"{metrics_user.var_95_param:.2%}",
             "Máximo Sharpe": f"{metrics_ms.var_95_param:.2%}",
             "Mínima Varianza (GMV)": f"{metrics_gmv.var_95_param:.2%}",
             "Equiponderada (1/N)": f"{metrics_eq.var_95_param:.2%}",
         },
-        "CVaR 95% Histórico (Expected Shortfall)": {
-            "Cartera Usuario": f"{metrics_user.cvar_95_hist:.2%}",
-            "Máximo Sharpe": f"{metrics_ms.cvar_95_hist:.2%}",
-            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_hist:.2%}",
-            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_hist:.2%}",
+        "CVaR 95% Paramétrico (1 Día)": {
+            "Cartera Usuario": f"{metrics_user.cvar_95_param:.2%}",
+            "Máximo Sharpe": f"{metrics_ms.cvar_95_param:.2%}",
+            "Mínima Varianza (GMV)": f"{metrics_gmv.cvar_95_param:.2%}",
+            "Equiponderada (1/N)": f"{metrics_eq.cvar_95_param:.2%}",
         },
     }
 
