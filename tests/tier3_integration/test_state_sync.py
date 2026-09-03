@@ -82,3 +82,56 @@ def test_preset_portfolios_integrity():
         assert abs(sum(weights.values()) - 1.0) < 1e-4
         # All weights in [0, 1]
         assert all(0.0 <= w <= 1.0 for w in weights.values())
+
+
+def test_remove_asset_transfers_weight_to_cash():
+    """Verify removing an asset when CASH is present transfers its full weight to CASH."""
+    rows = [
+        {"Ticker": "AAPL", "Ponderación (%)": 30.0},
+        {"Ticker": "MSFT", "Ponderación (%)": 30.0},
+        {"Ticker": "GOOGL", "Ponderación (%)": 20.0},
+        {"Ticker": "CASH", "Ponderación (%)": 20.0},
+    ]
+    target = "GOOGL"
+    target_idx = [i for i, r in enumerate(rows) if r["Ticker"] == target][0]
+    removed_row = rows.pop(target_idx)
+    rem_w = removed_row["Ponderación (%)"]
+
+    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    cash_indices = [i for i, r in enumerate(rows) if r["Ticker"] in cash_symbols]
+    assert len(cash_indices) == 1
+    cash_idx = cash_indices[0]
+    rows[cash_idx]["Ponderación (%)"] += rem_w
+
+    assert len(rows) == 3
+    assert rows[0]["Ticker"] == "AAPL" and rows[0]["Ponderación (%)"] == 30.0
+    assert rows[1]["Ticker"] == "MSFT" and rows[1]["Ponderación (%)"] == 30.0
+    assert rows[2]["Ticker"] == "CASH" and rows[2]["Ponderación (%)"] == 40.0
+    assert sum(r["Ponderación (%)"] for r in rows) == 100.0
+
+
+def test_remove_asset_distributes_equally_without_cash():
+    """Verify removing an asset when no CASH is present distributes weight equally among remaining assets."""
+    rows = [
+        {"Ticker": "AAPL", "Ponderación (%)": 40.0},
+        {"Ticker": "MSFT", "Ponderación (%)": 40.0},
+        {"Ticker": "GOOGL", "Ponderación (%)": 20.0},
+    ]
+    target = "GOOGL"
+    target_idx = [i for i, r in enumerate(rows) if r["Ticker"] == target][0]
+    removed_row = rows.pop(target_idx)
+    rem_w = removed_row["Ponderación (%)"]
+
+    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    cash_indices = [i for i, r in enumerate(rows) if r["Ticker"] in cash_symbols]
+    assert len(cash_indices) == 0
+
+    share = rem_w / len(rows)
+    for r in rows:
+        r["Ponderación (%)"] += share
+
+    assert len(rows) == 2
+    assert rows[0]["Ticker"] == "AAPL" and rows[0]["Ponderación (%)"] == 50.0
+    assert rows[1]["Ticker"] == "MSFT" and rows[1]["Ponderación (%)"] == 50.0
+    assert sum(r["Ponderación (%)"] for r in rows) == 100.0
+

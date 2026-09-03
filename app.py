@@ -432,6 +432,77 @@ def _apply_equal_weights() -> None:
     }
 
 
+def _remove_asset_from_portfolio(ticker_to_remove: Optional[str]) -> None:
+    """
+    Remove an asset from the portfolio matrix.
+    
+    Reallocation rule:
+    - If CASH/Liquidity is present in the remaining assets, transfer the removed asset's weight to CASH.
+    - If no CASH is present in the remaining assets, distribute the weight equally among all remaining assets.
+    - Synchronize num_assets, num_assets_selector, editor_version, tickers, and weights.
+    """
+    if not ticker_to_remove:
+        return
+    current_df = st.session_state.get("portfolio_matrix_df")
+    if current_df is None or current_df.empty:
+        return
+    
+    rows = current_df.to_dict(orient="records")
+    if len(rows) <= 2:
+        st.warning("⚠️ El portafolio debe contener al menos 2 activos para realizar la optimización de Markowitz.")
+        return
+
+    clean_target = str(ticker_to_remove).strip().upper()
+    
+    # Find row to remove
+    target_idx = None
+    for i, r in enumerate(rows):
+        if str(r.get("Ticker", "")).strip().upper() == clean_target:
+            target_idx = i
+            break
+            
+    if target_idx is None:
+        return
+
+    removed_row = rows.pop(target_idx)
+    removed_weight = float(removed_row.get("Ponderación (%)", 0.0))
+    n_remaining = len(rows)
+
+    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    cash_indices = [i for i, r in enumerate(rows) if str(r.get("Ticker", "")).strip().upper() in cash_symbols]
+
+    if cash_indices:
+        # Case A: Transfer weight directly to CASH
+        cash_idx = cash_indices[0]
+        rows[cash_idx]["Ponderación (%)"] = round(float(rows[cash_idx].get("Ponderación (%)", 0.0)) + removed_weight, 2)
+    else:
+        # Case B: Distribute weight equally among remaining assets
+        if n_remaining > 0:
+            share = removed_weight / n_remaining
+            for r in rows:
+                r["Ponderación (%)"] = round(float(r.get("Ponderación (%)", 0.0)) + share, 2)
+
+    # Balance rounding difference so sum is strictly 100.00%
+    diff = round(100.0 - sum(float(r.get("Ponderación (%)", 0.0)) for r in rows), 2)
+    if abs(diff) > 0.0 and len(rows) > 0:
+        if cash_indices:
+            rows[cash_indices[0]]["Ponderación (%)"] = round(float(rows[cash_indices[0]]["Ponderación (%)"]) + diff, 2)
+        else:
+            rows[-1]["Ponderación (%)"] = round(float(rows[-1]["Ponderación (%)"]) + diff, 2)
+
+    new_df = pd.DataFrame(rows)
+    st.session_state["portfolio_matrix_df"] = new_df
+    st.session_state["num_assets"] = len(rows)
+    st.session_state["num_assets_selector"] = len(rows)
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
+    st.session_state["tickers"] = [str(r["Ticker"]).strip().upper() for r in rows if str(r.get("Ticker", "")).strip()]
+    st.session_state["weights"] = {
+        str(r["Ticker"]).strip().upper(): float(r["Ponderación (%)"]) / 100.0
+        for r in rows
+        if str(r.get("Ticker", "")).strip()
+    }
+
+
 # ===========================================================================
 # 3. Sidebar Controls: Data Ingestion Source, Estimators & Constraints
 # ===========================================================================
@@ -817,6 +888,37 @@ with col_btn_ms:
 
 with col_btn_gmv:
     st.button("🛡️ Aplicar GMV (Mín Riesgo)", on_click=_apply_optimal_weights_by_type, args=("gmv",), use_container_width=True)
+
+# Quick Asset Removal Row
+current_matrix_tickers = [str(r["Ticker"]).strip().upper() for _, r in edited_matrix_df.iterrows() if str(r["Ticker"]).strip()]
+c_del_label, c_del_sel, c_del_btn, c_del_info = st.columns([1.3, 2.0, 1.8, 3.9])
+with c_del_label:
+    st.markdown("<div style='padding-top: 8px; font-weight: 600; color: #CBD5E1; font-size: 13px;'>🗑️ Quitar Activo:</div>", unsafe_allow_html=True)
+
+with c_del_sel:
+    selected_asset_to_remove = st.selectbox(
+        "Seleccionar activo a eliminar",
+        options=current_matrix_tickers,
+        key="select_asset_to_remove_box",
+        label_visibility="collapsed",
+    )
+
+with c_del_btn:
+    st.button(
+        "🗑️ Eliminar Fila",
+        on_click=_remove_asset_from_portfolio,
+        args=(selected_asset_to_remove,),
+        use_container_width=True,
+        help="Elimina la fila seleccionada. Si hay CASH en la cartera, su peso se transfiere a CASH; si no, se reparte equitativamente entre los demás activos.",
+    )
+
+with c_del_info:
+    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    has_cash = any(t in cash_symbols for t in current_matrix_tickers if t != selected_asset_to_remove)
+    if has_cash:
+        st.caption("💡 Al eliminar, la ponderación irá automáticamente a **CASH** sin alterar los demás.")
+    else:
+        st.caption("💡 Al eliminar, la ponderación se repartirá **equitativamente** entre todos los restantes.")
 
 st.markdown("---")
 
