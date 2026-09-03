@@ -61,6 +61,8 @@ def get_oauth_config() -> Dict[str, str]:
 
     if not config.get("redirect_uri"):
         config["redirect_uri"] = "http://localhost:8501"
+    else:
+        config["redirect_uri"] = config["redirect_uri"].rstrip("/")
 
     return config
 
