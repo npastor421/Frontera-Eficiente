@@ -29,6 +29,7 @@ from src.analytics.risk_metrics import (
     calculate_asset_betas,
     calculate_beta,
     calculate_jensen_alpha,
+    compute_drawdown_series,
     compute_portfolio_risk_metrics,
 )
 from src.data.asset_metadata import fetch_asset_classification
@@ -1605,22 +1606,253 @@ with tabs[3]:
     df_weights_raw = pd.DataFrame(
         {
             "Ticker": st.session_state["tickers"],
-            "Usuario": user_w_norm,
-            "Max Sharpe": ms_res.weights,
-            "GMV": gmv_res.weights,
-            "Equiponderada": eq_w_vec,
+            "Nombre / Descripción": [portfolio_metadata.get(t, {}).get("short_name", t) for t in st.session_state["tickers"]],
+            "Cartera Usuario": user_w_norm,
+            "Máximo Sharpe": ms_res.weights,
+            "Mínima Varianza (GMV)": gmv_res.weights,
+            "Equiponderada (1/N)": eq_w_vec,
+            "Retorno Anual (μ)": mu_series.values,
+            "Volatilidad Anual (σ)": [float(np.sqrt(psd_cov_df.loc[t, t])) for t in st.session_state["tickers"]],
+            "Sharpe Individual": [float(asset_sharpes.get(t, 0.0)) for t in st.session_state["tickers"]],
+            f"Beta Individual (β vs {benchmark_symbol})": [float(asset_betas.get(t, 1.0)) for t in st.session_state["tickers"]],
         }
     )
     csv_weights = export_weights_csv(df_weights_raw)
     csv_corr = export_correlation_csv(corr_df)
 
-    # Excel Workbook bytes
+    # Rich data structures for institutional 10-sheet Excel Report
+    min_eig_val = float(np.min(np.linalg.eigvalsh(psd_cov_df.values)))
+    export_model_metadata = {
+        "fecha_generacion": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "universo_tickers": st.session_state["tickers"],
+        "total_activos": len(st.session_state["tickers"]),
+        "fuente_datos": data_source,
+        "fecha_inicio": str(start_date),
+        "fecha_fin": str(end_date),
+        "dias_habiles_observados": len(daily_returns_df),
+        "tasa_libre_riesgo": rf_val,
+        "benchmark": benchmark_symbol,
+        "modelo_retornos": str(return_method.value if hasattr(return_method, "value") else return_method),
+        "modelo_retornos_desc": "Media Histórica Anualizada (252 días)" if "mean" in str(return_method).lower() else ("EWMA con decaimiento exponencial" if "ewma" in str(return_method).lower() else "Capital Asset Pricing Model (CAPM)"),
+        "modelo_covarianza": str(cov_method.value if hasattr(cov_method, "value") else cov_method),
+        "modelo_covarianza_desc": "Shrinkage Ledoit-Wolf hacia Target de Correlación Constante" if ("shrinkage" in str(cov_method).lower() or "ledoit" in str(cov_method).lower()) else ("Covarianza Muestral Clásica" if "sample" in str(cov_method).lower() else "EWMA RiskMetrics"),
+        "shrinkage_delta": float(cov_meta.get("shrinkage_delta", 0.0) or 0.0),
+        "numero_condicion": float(cond_num),
+        "autovalor_minimo": min_eig_val,
+        "reparacion_higham_psd": bool(was_repaired),
+        "tipo_posiciones": "Solo Posiciones Largas (Long-Only, w_i >= 0)" if not allow_short else "Ventas en Corto Permitidas (Short-Selling)",
+        "peso_min_activo": float(min_weight),
+        "peso_max_activo": float(max_weight),
+        "peso_min_cash": float(min_cash_weight) if "min_cash_weight" in locals() else 0.05,
+        "peso_max_cash": float(max_cash_weight) if "max_cash_weight" in locals() else 0.40,
+    }
+
+    cal_vols_exp, cal_rets_exp = compute_capital_allocation_line(
+        ms_vol=metrics_ms.annualized_volatility,
+        ms_ret=metrics_ms.annualized_return,
+        rf=rf_val,
+        max_vol=max(float(metrics_ms.annualized_volatility * 1.5), 0.40),
+        num_points=30,
+    )
+    export_frontier_data = {
+        "optimal_points": [
+            {"Punto / Cartera": "Máximo Ratio Sharpe (Tangencia)", "Volatilidad Anualizada": metrics_ms.annualized_volatility, "Retorno Anualizado": metrics_ms.annualized_return, "Ratio Sharpe": metrics_ms.sharpe_ratio},
+            {"Punto / Cartera": "Mínima Varianza Global (GMV)", "Volatilidad Anualizada": metrics_gmv.annualized_volatility, "Retorno Anualizado": metrics_gmv.annualized_return, "Ratio Sharpe": metrics_gmv.sharpe_ratio},
+            {"Punto / Cartera": "Cartera Usuario (Actual)", "Volatilidad Anualizada": metrics_user.annualized_volatility, "Retorno Anualizado": metrics_user.annualized_return, "Ratio Sharpe": metrics_user.sharpe_ratio},
+            {"Punto / Cartera": "Equiponderada (1/N)", "Volatilidad Anualizada": metrics_eq.annualized_volatility, "Retorno Anualizado": metrics_eq.annualized_return, "Ratio Sharpe": metrics_eq.sharpe_ratio},
+        ],
+        "individual_assets": [
+            {
+                "Activo": t,
+                "Volatilidad Anualizada": float(np.sqrt(psd_cov_df.loc[t, t])),
+                "Retorno Esperado Anual": float(mu_series[t]),
+                "Ratio Sharpe Individual": float(asset_sharpes.get(t, 0.0)),
+                "Beta Individual vs Benchmark": float(asset_betas.get(t, 1.0)),
+            }
+            for t in st.session_state["tickers"]
+        ],
+        "frontier_curve": pd.DataFrame({
+            "Volatilidad de Markowitz": frontier_res.target_volatilities,
+            "Retorno Objetivo": frontier_res.target_returns,
+            "Ratio de Sharpe": frontier_res.sharpe_ratios,
+        }) if frontier_res is not None else None,
+        "cal_line": pd.DataFrame({
+            "Nivel Volatilidad": cal_vols_exp,
+            "Retorno CAL": cal_rets_exp,
+        }),
+    }
+
+    # Diversification data
+    exp_asset_vols = [float(np.sqrt(psd_cov_df.loc[t, t])) for t in st.session_state["tickers"]]
+    div_u = compute_diversification_summary(st.session_state["tickers"], user_w_norm, exp_asset_vols, metrics_user.annualized_volatility, portfolio_metadata)
+    div_ms = compute_diversification_summary(st.session_state["tickers"], ms_res.weights, exp_asset_vols, metrics_ms.annualized_volatility, portfolio_metadata)
+    div_gmv = compute_diversification_summary(st.session_state["tickers"], gmv_res.weights, exp_asset_vols, metrics_gmv.annualized_volatility, portfolio_metadata)
+    div_eq = compute_diversification_summary(st.session_state["tickers"], eq_w_vec, exp_asset_vols, metrics_eq.annualized_volatility, portfolio_metadata)
+
+    df_div_summary = pd.DataFrame({
+        "Indicador Cuantitativo": [
+            "Ratio de Diversificación (Choueifaty DR)",
+            "Número Efectivo de Sectores (ENC)",
+            "Número Efectivo de Activos (ENC)",
+            "Concentración HHI Sectorial (0-10,000)",
+            "Concentración HHI Geográfica (0-10,000)",
+            "Concentración HHI de Activos (0-10,000)",
+            "Concentración Top 3 Sectores (%)",
+            "Concentración Top 3 Países (%)",
+            "Concentración Top 3 Activos (%)",
+            "Entropía de Información de Shannon",
+            "Ratio de Entropía Relativa",
+        ],
+        "Cartera Usuario": [
+            div_u.choueifaty_ratio, div_u.effective_n_sectors, div_u.effective_n_assets,
+            div_u.hhi_sectors, div_u.hhi_countries, div_u.hhi_assets,
+            div_u.top_3_sectors_pct / 100.0, div_u.top_3_countries_pct / 100.0, div_u.top_3_assets_pct / 100.0,
+            div_u.shannon_entropy, div_u.entropy_ratio,
+        ],
+        "Máximo Sharpe": [
+            div_ms.choueifaty_ratio, div_ms.effective_n_sectors, div_ms.effective_n_assets,
+            div_ms.hhi_sectors, div_ms.hhi_countries, div_ms.hhi_assets,
+            div_ms.top_3_sectors_pct / 100.0, div_ms.top_3_countries_pct / 100.0, div_ms.top_3_assets_pct / 100.0,
+            div_ms.shannon_entropy, div_ms.entropy_ratio,
+        ],
+        "Mínima Varianza (GMV)": [
+            div_gmv.choueifaty_ratio, div_gmv.effective_n_sectors, div_gmv.effective_n_assets,
+            div_gmv.hhi_sectors, div_gmv.hhi_countries, div_gmv.hhi_assets,
+            div_gmv.top_3_sectors_pct / 100.0, div_gmv.top_3_countries_pct / 100.0, div_gmv.top_3_assets_pct / 100.0,
+            div_gmv.shannon_entropy, div_gmv.entropy_ratio,
+        ],
+        "Equiponderada (1/N)": [
+            div_eq.choueifaty_ratio, div_eq.effective_n_sectors, div_eq.effective_n_assets,
+            div_eq.hhi_sectors, div_eq.hhi_countries, div_eq.hhi_assets,
+            div_eq.top_3_sectors_pct / 100.0, div_eq.top_3_countries_pct / 100.0, div_eq.top_3_assets_pct / 100.0,
+            div_eq.shannon_entropy, div_eq.entropy_ratio,
+        ],
+    })
+
+    def _build_breakdown_df(dimension_name: str, dim_label: str):
+        u_map = aggregate_dimension_weights(st.session_state["tickers"], user_w_norm, portfolio_metadata, dimension_name)
+        ms_map = aggregate_dimension_weights(st.session_state["tickers"], ms_res.weights, portfolio_metadata, dimension_name)
+        gmv_map = aggregate_dimension_weights(st.session_state["tickers"], gmv_res.weights, portfolio_metadata, dimension_name)
+        eq_map = aggregate_dimension_weights(st.session_state["tickers"], eq_w_vec, portfolio_metadata, dimension_name)
+        all_cats = sorted(list(set(u_map.keys()) | set(ms_map.keys()) | set(gmv_map.keys()) | set(eq_map.keys())))
+        return pd.DataFrame([
+            {
+                dim_label: cat,
+                "Cartera Usuario": u_map.get(cat, 0.0) / 100.0,
+                "Máximo Sharpe": ms_map.get(cat, 0.0) / 100.0,
+                "Mínima Varianza (GMV)": gmv_map.get(cat, 0.0) / 100.0,
+                "Equiponderada (1/N)": eq_map.get(cat, 0.0) / 100.0,
+            }
+            for cat in all_cats
+        ])
+
+    export_diversification_data = {
+        "summary_metrics": df_div_summary,
+        "sector_breakdown": _build_breakdown_df("sector", "Sector Económico (GICS)"),
+        "country_breakdown": _build_breakdown_df("country", "País / Geografía"),
+        "asset_class_breakdown": _build_breakdown_df("asset_class", "Clase de Activo"),
+        "market_cap_breakdown": _build_breakdown_df("market_cap_category", "Escala de Capitalización"),
+        "asset_classification_table": pd.DataFrame([
+            {
+                "Ticker": str(t).strip().upper(),
+                "Nombre": portfolio_metadata.get(str(t).strip().upper(), {}).get("short_name", t),
+                "Clase de Activo": portfolio_metadata.get(str(t).strip().upper(), {}).get("asset_class", "Renta Variable"),
+                "Sector": portfolio_metadata.get(str(t).strip().upper(), {}).get("sector", "Otros / Fondos"),
+                "Industria": portfolio_metadata.get(str(t).strip().upper(), {}).get("industry", "No Clasificado"),
+                "País": portfolio_metadata.get(str(t).strip().upper(), {}).get("country", "Global"),
+                "Escala Cap": portfolio_metadata.get(str(t).strip().upper(), {}).get("market_cap_category", "N/A"),
+                "Market Cap (USD)": portfolio_metadata.get(str(t).strip().upper(), {}).get("market_cap", 0.0),
+            }
+            for t in st.session_state["tickers"]
+        ]),
+    }
+
+    # Historical wealth & drawdown series
+    benchmark_wealth = 10000.0 * (1.0 + benchmark_returns_series).cumprod()
+    eq_wealth = 10000.0 * (1.0 + pd.Series(port_daily_returns_df.values @ eq_w_vec, index=port_daily_returns_df.index)).cumprod()
+    export_wealth_df = pd.DataFrame({
+        "Fecha": port_daily_returns_df.index,
+        "Cartera Usuario ($)": metrics_user.cumulative_wealth.values,
+        "Máximo Sharpe ($)": metrics_ms.cumulative_wealth.values,
+        "Mínima Varianza GMV ($)": metrics_gmv.cumulative_wealth.values,
+        "Equiponderada 1/N ($)": eq_wealth.values,
+        f"Benchmark {benchmark_symbol} ($)": benchmark_wealth.values,
+    })
+
+    eq_dd_series, _, _, _ = compute_drawdown_series(port_daily_returns_df.values @ eq_w_vec)
+    bench_dd_series, _, _, _ = compute_drawdown_series(benchmark_returns_series)
+    export_drawdown_df = pd.DataFrame({
+        "Fecha": port_daily_returns_df.index,
+        "Drawdown Usuario": metrics_user.drawdown_series.values,
+        "Drawdown Máximo Sharpe": metrics_ms.drawdown_series.values,
+        "Drawdown GMV": metrics_gmv.drawdown_series.values,
+        "Drawdown Equiponderada": eq_dd_series.values,
+        f"Drawdown Benchmark ({benchmark_symbol})": bench_dd_series.values,
+    })
+
+    # Stochastic Monte Carlo Projections
+    traj_exp = run_trajectory_monte_carlo(
+        expected_returns=mu_series.values,
+        cov_matrix=psd_cov_df.values,
+        weights=user_w_norm,
+        initial_capital=10000.0,
+        years=3,
+        num_simulations=2000,
+        model="gbm",
+        historical_returns=daily_returns_df.values,
+        seed=42,
+    )
+    p5_exp = float(traj_exp.percentile_5[-1])
+    p25_exp = float(traj_exp.percentile_25[-1])
+    p50_exp = float(traj_exp.percentile_50[-1])
+    p75_exp = float(traj_exp.percentile_75[-1])
+    p95_exp = float(traj_exp.percentile_95[-1])
+
+    export_monte_carlo_data = {
+        "horizon_years": 3,
+        "num_simulations": 2000,
+        "model": "Movimiento Browniano Geométrico (GBM)",
+        "terminal_scenarios": pd.DataFrame([
+            {"Escenario Proyectado": "Percentil 5% (Adverso / Estrés de Mercado)", "Capital Final Proyectado ($10k Inicial)": p5_exp, "Rendimiento Acumulado Total": (p5_exp - 10000.0) / 10000.0},
+            {"Escenario Proyectado": "Percentil 25% (Moderadamente Conservador)", "Capital Final Proyectado ($10k Inicial)": p25_exp, "Rendimiento Acumulado Total": (p25_exp - 10000.0) / 10000.0},
+            {"Escenario Proyectado": "Percentil 50% (Mediana / Escenario Esperado)", "Capital Final Proyectado ($10k Inicial)": p50_exp, "Rendimiento Acumulado Total": (p50_exp - 10000.0) / 10000.0},
+            {"Escenario Proyectado": "Percentil 75% (Moderadamente Optimista)", "Capital Final Proyectado ($10k Inicial)": p75_exp, "Rendimiento Acumulado Total": (p75_exp - 10000.0) / 10000.0},
+            {"Escenario Proyectado": "Percentil 95% (Favorable / Alcista)", "Capital Final Proyectado ($10k Inicial)": p95_exp, "Rendimiento Acumulado Total": (p95_exp - 10000.0) / 10000.0},
+        ]),
+        "cones_df": pd.DataFrame({
+            "Paso de Simulación": list(range(len(traj_exp.percentile_50))),
+            "Percentil 5% (P5)": traj_exp.percentile_5,
+            "Percentil 25% (P25)": traj_exp.percentile_25,
+            "Percentil 50% (Mediana)": traj_exp.percentile_50,
+            "Percentil 75% (P75)": traj_exp.percentile_75,
+            "Percentil 95% (P95)": traj_exp.percentile_95,
+        }).iloc[::max(len(traj_exp.percentile_50) // 50, 1)],
+    }
+
+    # Comparator Data
+    export_comparator_data = {
+        "summary_table": pd.DataFrame([
+            {"Portafolio": "Cartera Usuario (Actual)", "Retorno Anual": metrics_user.annualized_return, "Volatilidad": metrics_user.annualized_volatility, "Ratio Sharpe": metrics_user.sharpe_ratio, "Ratio Sortino": metrics_user.sortino_ratio, "Ratio Calmar": metrics_user.calmar_ratio, "Máx Drawdown": metrics_user.max_drawdown, "VaR 95%": metrics_user.var_95_hist, "CVaR 95%": metrics_user.cvar_95_hist},
+            {"Portafolio": "Máximo Ratio Sharpe (Tangencia)", "Retorno Anual": metrics_ms.annualized_return, "Volatilidad": metrics_ms.annualized_volatility, "Ratio Sharpe": metrics_ms.sharpe_ratio, "Ratio Sortino": metrics_ms.sortino_ratio, "Ratio Calmar": metrics_ms.calmar_ratio, "Máx Drawdown": metrics_ms.max_drawdown, "VaR 95%": metrics_ms.var_95_hist, "CVaR 95%": metrics_ms.cvar_95_hist},
+            {"Portafolio": "Mínima Varianza Global (GMV)", "Retorno Anual": metrics_gmv.annualized_return, "Volatilidad": metrics_gmv.annualized_volatility, "Ratio Sharpe": metrics_gmv.sharpe_ratio, "Ratio Sortino": metrics_gmv.sortino_ratio, "Ratio Calmar": metrics_gmv.calmar_ratio, "Máx Drawdown": metrics_gmv.max_drawdown, "VaR 95%": metrics_gmv.var_95_hist, "CVaR 95%": metrics_gmv.cvar_95_hist},
+            {"Portafolio": "Equiponderada (1/N)", "Retorno Anual": metrics_eq.annualized_return, "Volatilidad": metrics_eq.annualized_volatility, "Ratio Sharpe": metrics_eq.sharpe_ratio, "Ratio Sortino": metrics_eq.sortino_ratio, "Ratio Calmar": metrics_eq.calmar_ratio, "Máx Drawdown": metrics_eq.max_drawdown, "VaR 95%": metrics_eq.var_95_hist, "CVaR 95%": metrics_eq.cvar_95_hist},
+        ]),
+        "weights_table": df_weights_raw[["Ticker", "Cartera Usuario", "Máximo Sharpe", "Mínima Varianza (GMV)", "Equiponderada (1/N)"]],
+    }
+
+    # Excel Workbook bytes (Full 10 Sheets)
     excel_bytes = export_full_excel(
         metrics_dict={"Cartera Usuario": metrics_user, "Máximo Sharpe": metrics_ms, "GMV": metrics_gmv, "Equiponderada": metrics_eq},
         weights_dict=df_weights_raw,
         corr_matrix=corr_df,
         cov_matrix=psd_cov_df,
-        wealth_df=pd.DataFrame({k: v.cumulative_wealth for k, v in [("Usuario", metrics_user), ("Max Sharpe", metrics_ms), ("GMV", metrics_gmv)]}),
+        wealth_df=export_wealth_df,
+        drawdown_df=export_drawdown_df,
+        model_metadata=export_model_metadata,
+        diversification_data=export_diversification_data,
+        frontier_data=export_frontier_data,
+        monte_carlo_data=export_monte_carlo_data,
+        comparator_data=export_comparator_data,
     )
 
     exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
