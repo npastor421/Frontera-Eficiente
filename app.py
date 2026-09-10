@@ -74,13 +74,15 @@ from src.presets import (
     save_custom_portfolio,
 )
 from src.simulation import run_trajectory_monte_carlo, run_weight_space_monte_carlo
-from src.visualization import (
+from src.visualization.diversification_plots import (
+    plot_dimension_donut,
+    plot_diversification_treemap,
+)
+from src.visualization.plots import (
     plot_allocation_comparison,
     plot_asset_allocation,
     plot_correlation_heatmap,
     plot_covariance_heatmap,
-    plot_dimension_donut,
-    plot_diversification_treemap,
     plot_efficient_frontier,
     plot_historical_backtest,
     plot_monte_carlo_cones,
