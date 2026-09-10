@@ -21,12 +21,17 @@ import pandas as pd
 import streamlit as st
 
 # Internal platform module imports
+from src.analytics.diversification import (
+    aggregate_dimension_weights,
+    compute_diversification_summary,
+)
 from src.analytics.risk_metrics import (
     calculate_asset_betas,
     calculate_beta,
     calculate_jensen_alpha,
     compute_portfolio_risk_metrics,
 )
+from src.data.asset_metadata import fetch_asset_classification
 from src.data.broker_parser import parse_broker_holdings
 from src.data.cleaner import clean_and_align_prices
 from src.data.loader import fetch_asset_data, load_manual_file, validate_tickers
@@ -74,6 +79,8 @@ from src.visualization import (
     plot_asset_allocation,
     plot_correlation_heatmap,
     plot_covariance_heatmap,
+    plot_dimension_donut,
+    plot_diversification_treemap,
     plot_efficient_frontier,
     plot_historical_backtest,
     plot_monte_carlo_cones,
@@ -1176,6 +1183,7 @@ corr_df = pd.DataFrame(corr_mat, index=psd_cov_df.index, columns=psd_cov_df.colu
 tabs = st.tabs([
     "📈 Frontera Eficiente & Optimización",
     "🍩 Asignación de Activos",
+    "🌐 Diversificación Real (Sectores & Geografía)",
     "📑 Métricas Avanzadas & Exportación",
     "💰 Backtest Histórico & Drawdown",
     "🔮 Proyección Monte Carlo (Conos)",
@@ -1284,9 +1292,188 @@ with tabs[1]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 3: Métricas Avanzadas & Exportación
+# TAB 3: Diversificación Real (Sectores & Geografía)
 # ---------------------------------------------------------------------------
 with tabs[2]:
+    st.markdown("### 🌐 Diagnóstico Cuantitativo de Diversificación Real")
+    st.caption("Evalúa si la diversificación del portafolio es genuina o una pseudo-diversificación por sobreconcentración en sectores, países o clases de activos.")
+
+    # 1. Portfolio Selection Selector
+    div_sel_col1, div_sel_col2 = st.columns([1.5, 2.5])
+    with div_sel_col1:
+        portfolio_choice = st.selectbox(
+            "Seleccionar Cartera para Análisis:",
+            options=[
+                "🎯 Cartera Usuario (Ponderaciones Actuales)",
+                "💎 Máximo Ratio Sharpe (Tangencia)",
+                "🛡️ Mínima Varianza Global (GMV)",
+                "➗ Equiponderada (1/N)",
+            ],
+            key="diversification_portfolio_selector",
+        )
+
+    # Resolve active weights and portfolio volatility based on selection
+    if "Máximo Ratio Sharpe" in portfolio_choice:
+        sel_weights = ms_res.weights
+        sel_port_vol = metrics_ms.annualized_volatility
+        port_label = "Máximo Sharpe"
+    elif "Mínima Varianza" in portfolio_choice:
+        sel_weights = gmv_res.weights
+        sel_port_vol = metrics_gmv.annualized_volatility
+        port_label = "Mínima Varianza (GMV)"
+    elif "Equiponderada" in portfolio_choice:
+        sel_weights = eq_w_vec
+        sel_port_vol = metrics_eq.annualized_volatility
+        port_label = "Equiponderada (1/N)"
+    else:
+        sel_weights = user_w_norm
+        sel_port_vol = metrics_user.annualized_volatility
+        port_label = "Cartera Usuario"
+
+    # Individual asset volatilities
+    asset_vols = [float(np.sqrt(psd_cov_df.loc[t, t])) for t in st.session_state["tickers"]]
+
+    # Fetch classification metadata (cached)
+    with st.spinner("Obteniendo metadatos sectoriales y geográficos de activos..."):
+        portfolio_metadata = fetch_asset_classification(st.session_state["tickers"])
+
+    # Compute Diversification Summary
+    div_summary = compute_diversification_summary(
+        tickers=st.session_state["tickers"],
+        weights=sel_weights,
+        asset_vols=asset_vols,
+        portfolio_vol=sel_port_vol,
+        metadata=portfolio_metadata,
+    )
+
+    # 2. Executive KPI Cards
+    kpi_d1, kpi_d2, kpi_d3, kpi_d4 = st.columns(4)
+    with kpi_d1:
+        # Choueifaty Ratio
+        dr_val = div_summary.choueifaty_ratio
+        dr_desc = "Excelente diversificación" if dr_val >= 1.3 else ("Moderada" if dr_val >= 1.1 else "Baja / Nula")
+        st.markdown(
+            f"""
+            <div class='metric-card'>
+                <div class='metric-title'>Ratio de Diversificación (Choueifaty)</div>
+                <div class='metric-value' style='color:#00F0FF;'>{dr_val:.2f}x</div>
+                <div class='metric-subtitle'>{dr_desc} (&gt;1.0 implica sinergia no correlacionada)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with kpi_d2:
+        # Effective Number of Sectors
+        enc_sec = div_summary.effective_n_sectors
+        n_tickers = len(st.session_state["tickers"])
+        st.markdown(
+            f"""
+            <div class='metric-card'>
+                <div class='metric-title'>Nº Efectivo de Sectores (ENC)</div>
+                <div class='metric-value' style='color:#00FF66;'>{enc_sec:.1f}</div>
+                <div class='metric-subtitle'>Sobre {n_tickers} activos totales ({div_summary.effective_n_assets:.1f} activos efectivos)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with kpi_d3:
+        # HHI Sectorial
+        hhi_sec = div_summary.hhi_sectors
+        if hhi_sec < 1500:
+            hhi_color = "#00FF66"
+            hhi_status = "Baja Concentración"
+        elif hhi_sec <= 2500:
+            hhi_color = "#FFCC00"
+            hhi_status = "Moderadamente Concentrado"
+        else:
+            hhi_color = "#FF3366"
+            hhi_status = "Alta Concentración"
+        st.markdown(
+            f"""
+            <div class='metric-card'>
+                <div class='metric-title'>Concentración HHI Sectorial</div>
+                <div class='metric-value' style='color:{hhi_color};'>{hhi_sec:,.0f}</div>
+                <div class='metric-subtitle'>{hhi_status} (Escala 0–10,000)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with kpi_d4:
+        # Top 3 Sectors Pct
+        top3_sec = div_summary.top_3_sectors_pct
+        st.markdown(
+            f"""
+            <div class='metric-card'>
+                <div class='metric-title'>Concentración Top 3 Sectores</div>
+                <div class='metric-value' style='color:#FFA500;'>{top3_sec:.1f}%</div>
+                <div class='metric-subtitle'>Top 3 Países: {div_summary.top_3_countries_pct:.1f}% | Top 3 Activos: {div_summary.top_3_assets_pct:.1f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 3. Hierarchical Treemap Plot
+    fig_treemap = plot_diversification_treemap(
+        tickers=st.session_state["tickers"],
+        weights=sel_weights,
+        metadata=portfolio_metadata,
+        title=f"Mapa Jerárquico de Diversificación — {port_label} (Clase → País → Sector → Ticker)",
+    )
+    st.plotly_chart(fig_treemap, use_container_width=True)
+
+    # 4. Four Donut Breakdown Charts (2x2 Grid)
+    st.markdown("#### 🍩 Desglose Multidimensional de la Cartera")
+    sec_weights = aggregate_dimension_weights(st.session_state["tickers"], sel_weights, portfolio_metadata, "sector")
+    country_weights = aggregate_dimension_weights(st.session_state["tickers"], sel_weights, portfolio_metadata, "country")
+    class_weights = aggregate_dimension_weights(st.session_state["tickers"], sel_weights, portfolio_metadata, "asset_class")
+    cap_weights = aggregate_dimension_weights(st.session_state["tickers"], sel_weights, portfolio_metadata, "market_cap_category")
+
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        fig_d_sec = plot_dimension_donut(sec_weights, title="Distribución por Sector Económico")
+        st.plotly_chart(fig_d_sec, use_container_width=True)
+    with col_d2:
+        fig_d_geo = plot_dimension_donut(country_weights, title="Distribución por País / Geografía")
+        st.plotly_chart(fig_d_geo, use_container_width=True)
+
+    col_d3, col_d4 = st.columns(2)
+    with col_d3:
+        fig_d_cls = plot_dimension_donut(class_weights, title="Distribución por Clase de Activo")
+        st.plotly_chart(fig_d_cls, use_container_width=True)
+    with col_d4:
+        fig_d_cap = plot_dimension_donut(cap_weights, title="Distribución por Capitalización de Mercado")
+        st.plotly_chart(fig_d_cap, use_container_width=True)
+
+    # 5. Granular Classification Table
+    st.markdown("#### 📋 Matriz Detallada de Clasificación por Activo")
+    table_rows = []
+    for i, t in enumerate(st.session_state["tickers"]):
+        clean_t = str(t).strip().upper()
+        w_val = float(sel_weights[i]) if i < len(sel_weights) else 0.0
+        meta = portfolio_metadata.get(clean_t, {})
+        m_cap = meta.get("market_cap", 0.0)
+        m_cap_str = f"${m_cap / 1e9:,.2f}B" if m_cap and m_cap >= 1e9 else (f"${m_cap / 1e6:,.1f}M" if m_cap and m_cap >= 1e6 else "N/A")
+        table_rows.append({
+            "Activo / Ticker": clean_t,
+            "Nombre / Descripción": meta.get("short_name", clean_t),
+            f"Ponderación ({port_label})": f"{w_val:.2%}",
+            "Clase de Activo": meta.get("asset_class", "Renta Variable"),
+            "Sector": meta.get("sector", "Otros / Fondos"),
+            "Industria": meta.get("industry", "No Clasificado"),
+            "País": meta.get("country", "Global"),
+            "Escala Cap": meta.get("market_cap_category", "N/A"),
+            "Market Cap": m_cap_str,
+        })
+    df_div_details = pd.DataFrame(table_rows)
+    st.dataframe(df_div_details, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# TAB 4: Métricas Avanzadas & Exportación
+# ---------------------------------------------------------------------------
+with tabs[3]:
     st.markdown("### 📑 Tabla Comparativa de Métricas de Riesgo y Rendimiento")
 
     # Construct Master Metrics DataFrame
@@ -1470,9 +1657,9 @@ with tabs[2]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 4: Backtest Histórico & Drawdown
+# TAB 5: Backtest Histórico & Drawdown
 # ---------------------------------------------------------------------------
-with tabs[3]:
+with tabs[4]:
     st.markdown("### 💰 Evolución Patrimonial ($10,000 USD Base) y Caídas de Valor")
     ret_dict_backtest = {
         "Cartera Usuario": port_daily_returns_df.values @ user_w_norm,
@@ -1529,9 +1716,9 @@ with tabs[3]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 5: Proyección Monte Carlo (Conos de Probabilidad)
+# TAB 6: Proyección Monte Carlo (Conos de Probabilidad)
 # ---------------------------------------------------------------------------
-with tabs[4]:
+with tabs[5]:
     st.markdown("### 🔮 Simulación Estocástica de Trayectorias a Futuro")
     mc_c1, mc_c2, mc_c3 = st.columns(3)
     with mc_c1:
@@ -1580,9 +1767,9 @@ with tabs[4]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 6: Matrices de Riesgo (Correlación / Covarianza)
+# TAB 7: Matrices de Riesgo (Correlación / Covarianza)
 # ---------------------------------------------------------------------------
-with tabs[5]:
+with tabs[6]:
     st.markdown("### 🧊 Estructura de Dependencia y Covarianza")
     col_corr, col_cov = st.columns(2)
 
@@ -1609,9 +1796,9 @@ with tabs[5]:
 
 
 # ---------------------------------------------------------------------------
-# TAB 7: Comparador Multi-Portafolio
+# TAB 8: Comparador Multi-Portafolio
 # ---------------------------------------------------------------------------
-with tabs[6]:
+with tabs[7]:
     st.markdown("### ⚖️ Comparativa Avanzada entre Múltiples Portafolios")
     st.caption("Compara el rendimiento histórico, la volatilidad, ratios de Sharpe/Sortino y la diversificación de cualquier combinación de carteras.")
 

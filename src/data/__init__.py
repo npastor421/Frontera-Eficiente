@@ -22,6 +22,12 @@ from src.data.loader import (
     validate_tickers,
 )
 
+from src.data.asset_metadata import (
+    categorize_asset_class,
+    categorize_market_cap,
+    fetch_asset_classification,
+)
+
 __all__ = [
     "fetch_asset_data",
     "parse_manual_data",
@@ -36,4 +42,7 @@ __all__ = [
     "get_cached_asset_data",
     "get_cached_raw_prices",
     "clear_data_cache",
+    "fetch_asset_classification",
+    "categorize_market_cap",
+    "categorize_asset_class",
 ]

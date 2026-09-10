@@ -15,6 +15,10 @@ from src.visualization.plots import (
     plot_monte_carlo_projection_cones,
     plot_portfolio_comparison_scatter,
 )
+from src.visualization.diversification_plots import (
+    plot_dimension_donut,
+    plot_diversification_treemap,
+)
 
 __all__ = [
     "plot_efficient_frontier",
@@ -28,4 +32,7 @@ __all__ = [
     "plot_monte_carlo_cones",
     "plot_monte_carlo_projection_cones",
     "plot_portfolio_comparison_scatter",
+    "plot_diversification_treemap",
+    "plot_dimension_donut",
 ]
+
