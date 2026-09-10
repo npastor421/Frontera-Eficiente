@@ -1671,13 +1671,17 @@ with tabs[3]:
         "peso_max_cash": float(cash_max_pct) if "cash_max_pct" in locals() else 0.40,
     }
 
-    cal_vols_exp, cal_rets_exp = compute_capital_allocation_line(
-        ms_vol=metrics_ms.annualized_volatility,
-        ms_ret=metrics_ms.annualized_return,
-        rf=rf_val,
-        max_vol=max(float(metrics_ms.annualized_volatility * 1.5), 0.40),
-        num_points=30,
-    )
+    if frontier_res is not None and hasattr(frontier_res, "cal_line") and frontier_res.cal_line is not None:
+        cal_vols_exp, cal_rets_exp = frontier_res.cal_line
+    else:
+        cal_vols_exp, cal_rets_exp = compute_capital_allocation_line(
+            max_sharpe_portfolio=ms_res,
+            rf=rf_val,
+            max_vol=max(float(metrics_ms.annualized_volatility * 1.5), 0.40),
+            num_points=30,
+            ms_vol=metrics_ms.annualized_volatility,
+            ms_ret=metrics_ms.annualized_return,
+        )
     export_frontier_data = {
         "optimal_points": [
             {"Punto / Cartera": "Máximo Ratio Sharpe (Tangencia)", "Volatilidad Anualizada": metrics_ms.annualized_volatility, "Retorno Anualizado": metrics_ms.annualized_return, "Ratio Sharpe": metrics_ms.sharpe_ratio},
@@ -1696,9 +1700,9 @@ with tabs[3]:
             for t in st.session_state["tickers"]
         ],
         "frontier_curve": pd.DataFrame({
-            "Volatilidad de Markowitz": frontier_res.target_volatilities,
-            "Retorno Objetivo": frontier_res.target_returns,
-            "Ratio de Sharpe": frontier_res.sharpe_ratios,
+            "Volatilidad de Markowitz": getattr(frontier_res, "volatilities", getattr(frontier_res, "target_volatilities", [])),
+            "Retorno Objetivo": getattr(frontier_res, "returns", getattr(frontier_res, "target_returns", [])),
+            "Ratio de Sharpe": getattr(frontier_res, "sharpe_ratios", []),
         }) if frontier_res is not None else None,
         "cal_line": pd.DataFrame({
             "Nivel Volatilidad": cal_vols_exp,

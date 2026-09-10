@@ -34,6 +34,16 @@ class EfficientFrontierResult:
     max_sharpe_portfolio: OptimizationResult
     cal_line: Tuple[np.ndarray, np.ndarray]  # (cal_volatilities, cal_returns)
 
+    @property
+    def target_returns(self) -> np.ndarray:
+        """Alias for returns along the frontier."""
+        return self.returns
+
+    @property
+    def target_volatilities(self) -> np.ndarray:
+        """Alias for volatilities along the frontier."""
+        return self.volatilities
+
     def to_dict(self) -> dict[str, Any]:
         """Convert result to serializable dictionary."""
         return {
@@ -48,11 +58,14 @@ class EfficientFrontierResult:
 
 
 def compute_capital_allocation_line(
-    max_sharpe_portfolio: OptimizationResult,
+    max_sharpe_portfolio: Optional[OptimizationResult] = None,
     rf: float = 0.04,
     max_vol: Optional[float] = None,
     max_volatility: Optional[float] = None,
     num_points: int = 50,
+    ms_vol: Optional[float] = None,
+    ms_ret: Optional[float] = None,
+    **kwargs: Any,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate the Capital Allocation Line (CAL) tangent from (0, Rf) through the Max Sharpe portfolio.
@@ -62,7 +75,7 @@ def compute_capital_allocation_line(
 
     Parameters
     ----------
-    max_sharpe_portfolio : OptimizationResult
+    max_sharpe_portfolio : OptimizationResult, optional
         Optimized Maximum Sharpe (Tangency) portfolio.
     rf : float, default 0.04
         Risk-free rate.
@@ -72,22 +85,35 @@ def compute_capital_allocation_line(
         Alias for max_vol.
     num_points : int, default 50
         Number of points on the line.
+    ms_vol : float, optional
+        Explicit Max Sharpe volatility (if max_sharpe_portfolio is omitted).
+    ms_ret : float, optional
+        Explicit Max Sharpe return (if max_sharpe_portfolio is omitted).
 
     Returns
     -------
     tuple of (np.ndarray, np.ndarray)
         (cal_volatilities, cal_returns)
     """
+    if max_sharpe_portfolio is not None:
+        slope = float(max_sharpe_portfolio.sharpe_ratio)
+        ref_vol = float(max_sharpe_portfolio.volatility)
+    elif ms_vol is not None and ms_ret is not None:
+        ref_vol = float(ms_vol)
+        slope = float((ms_ret - rf) / ms_vol) if ms_vol > 1e-12 else 0.0
+    else:
+        ref_vol = float(ms_vol) if ms_vol is not None else 0.20
+        slope = 0.0
+
     end_vol: float
     if max_vol is not None:
         end_vol = float(max_vol)
     elif max_volatility is not None:
         end_vol = float(max_volatility)
     else:
-        end_vol = max(0.50, float(1.3 * max_sharpe_portfolio.volatility))
+        end_vol = max(0.50, float(1.3 * ref_vol))
 
     cal_volatilities = np.linspace(0.0, end_vol, num_points, dtype=np.float64)
-    slope = float(max_sharpe_portfolio.sharpe_ratio)
     cal_returns = rf + slope * cal_volatilities
 
     return (cal_volatilities, cal_returns)
