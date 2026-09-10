@@ -1632,19 +1632,43 @@ with tabs[3]:
         "dias_habiles_observados": len(daily_returns_df),
         "tasa_libre_riesgo": rf_val,
         "benchmark": benchmark_symbol,
-        "modelo_retornos": str(return_method.value if hasattr(return_method, "value") else return_method),
-        "modelo_retornos_desc": "Media Histórica Anualizada (252 días)" if "mean" in str(return_method).lower() else ("EWMA con decaimiento exponencial" if "ewma" in str(return_method).lower() else "Capital Asset Pricing Model (CAPM)"),
-        "modelo_covarianza": str(cov_method.value if hasattr(cov_method, "value") else cov_method),
-        "modelo_covarianza_desc": "Shrinkage Ledoit-Wolf hacia Target de Correlación Constante" if ("shrinkage" in str(cov_method).lower() or "ledoit" in str(cov_method).lower()) else ("Covarianza Muestral Clásica" if "sample" in str(cov_method).lower() else "EWMA RiskMetrics"),
+        "modelo_retornos": str(return_estimator.value if hasattr(return_estimator, "value") else return_estimator),
+        "modelo_retornos_desc": (
+            "Media Histórica Anualizada (252 días)"
+            if any(k in str(return_estimator).lower() for k in ("arithmetic", "mean"))
+            else (
+                "Retorno Compuesto (CAGR)"
+                if "geometric" in str(return_estimator).lower()
+                else (
+                    "EWMA con decaimiento exponencial"
+                    if "ewma" in str(return_estimator).lower()
+                    else "Capital Asset Pricing Model (CAPM)"
+                )
+            )
+        ),
+        "modelo_covarianza": str(cov_estimator.value if hasattr(cov_estimator, "value") else cov_estimator),
+        "modelo_covarianza_desc": (
+            "Shrinkage Ledoit-Wolf hacia Target de Correlación Constante"
+            if any(k in str(cov_estimator).lower() for k in ("cc", "shrinkage", "ledoit"))
+            else (
+                "Shrinkage Ledoit-Wolf hacia Diagonal"
+                if "diag" in str(cov_estimator).lower()
+                else (
+                    "Covarianza Muestral Clásica"
+                    if "sample" in str(cov_estimator).lower()
+                    else "EWMA RiskMetrics"
+                )
+            )
+        ),
         "shrinkage_delta": float(cov_meta.get("shrinkage_delta", 0.0) or 0.0),
         "numero_condicion": float(cond_num),
         "autovalor_minimo": min_eig_val,
         "reparacion_higham_psd": bool(was_repaired),
         "tipo_posiciones": "Solo Posiciones Largas (Long-Only, w_i >= 0)" if not allow_short else "Ventas en Corto Permitidas (Short-Selling)",
-        "peso_min_activo": float(min_weight),
-        "peso_max_activo": float(max_weight),
-        "peso_min_cash": float(min_cash_weight) if "min_cash_weight" in locals() else 0.05,
-        "peso_max_cash": float(max_cash_weight) if "max_cash_weight" in locals() else 0.40,
+        "peso_min_activo": float(min_weight_pct),
+        "peso_max_activo": float(max_weight_pct),
+        "peso_min_cash": float(cash_min_pct) if "cash_min_pct" in locals() else 0.05,
+        "peso_max_cash": float(cash_max_pct) if "cash_max_pct" in locals() else 0.40,
     }
 
     cal_vols_exp, cal_rets_exp = compute_capital_allocation_line(
