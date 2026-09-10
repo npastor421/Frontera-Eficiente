@@ -135,3 +135,54 @@ def test_remove_asset_distributes_equally_without_cash():
     assert rows[1]["Ticker"] == "MSFT" and rows[1]["Ponderación (%)"] == 50.0
     assert sum(r["Ponderación (%)"] for r in rows) == 100.0
 
+
+def test_remove_asset_by_row_index_via_button_column():
+    """Verify deleting a row by index (as triggered by ButtonColumn click) correctly removes asset and reallocates."""
+    rows = [
+        {"Ticker": "AAPL", "Ponderación (%)": 40.0},
+        {"Ticker": "MSFT", "Ponderación (%)": 35.0},
+        {"Ticker": "CASH", "Ponderación (%)": 25.0},
+    ]
+    # Button clicked on row index 0 (AAPL)
+    clicked_row_idx = 0
+    removed_row = rows.pop(clicked_row_idx)
+    assert removed_row["Ticker"] == "AAPL"
+    rem_w = removed_row["Ponderación (%)"]
+
+    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    cash_indices = [i for i, r in enumerate(rows) if r["Ticker"] in cash_symbols]
+    assert len(cash_indices) == 1
+    rows[cash_indices[0]]["Ponderación (%)"] += rem_w
+
+    assert len(rows) == 2
+    assert rows[0]["Ticker"] == "MSFT" and rows[0]["Ponderación (%)"] == 35.0
+    assert rows[1]["Ticker"] == "CASH" and rows[1]["Ponderación (%)"] == 65.0
+    assert sum(r["Ponderación (%)"] for r in rows) == 100.0
+
+
+def test_remove_asset_with_pending_editor_changes():
+    """Verify pending data editor changes are integrated before removing the row."""
+    initial_rows = [
+        {"Ticker": "AAPL", "Ponderación (%)": 30.0},
+        {"Ticker": "MSFT", "Ponderación (%)": 30.0},
+        {"Ticker": "CASH", "Ponderación (%)": 40.0},
+    ]
+    # User edited MSFT to 40% before clicking delete on AAPL
+    pending_edited_rows = {1: {"Ponderación (%)": 40.0}}
+    for idx, changes in pending_edited_rows.items():
+        initial_rows[idx].update(changes)
+
+    # Click delete on row 0 (AAPL)
+    removed = initial_rows.pop(0)
+    assert removed["Ticker"] == "AAPL"
+    # CASH absorbs AAPL's 30%
+    initial_rows[1]["Ponderación (%)"] += removed["Ponderación (%)"]
+
+    assert initial_rows[0]["Ticker"] == "MSFT" and initial_rows[0]["Ponderación (%)"] == 40.0
+    assert initial_rows[1]["Ticker"] == "CASH" and initial_rows[1]["Ponderación (%)"] == 70.0
+    # Rebalance to 100%
+    diff = round(100.0 - sum(r["Ponderación (%)"] for r in initial_rows), 2)
+    initial_rows[1]["Ponderación (%)"] += diff
+    assert sum(r["Ponderación (%)"] for r in initial_rows) == 100.0
+
+

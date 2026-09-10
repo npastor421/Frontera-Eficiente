@@ -432,7 +432,10 @@ def _apply_equal_weights() -> None:
     }
 
 
-def _remove_asset_from_portfolio(ticker_to_remove: Optional[str]) -> None:
+def _remove_asset_from_portfolio(
+    ticker_to_remove: Optional[str] = None,
+    row_index: Optional[int] = None,
+) -> None:
     """
     Remove an asset from the portfolio matrix.
     
@@ -441,26 +444,39 @@ def _remove_asset_from_portfolio(ticker_to_remove: Optional[str]) -> None:
     - If no CASH is present in the remaining assets, distribute the weight equally among all remaining assets.
     - Synchronize num_assets, num_assets_selector, editor_version, tickers, and weights.
     """
-    if not ticker_to_remove:
-        return
     current_df = st.session_state.get("portfolio_matrix_df")
     if current_df is None or current_df.empty:
         return
     
-    rows = current_df.to_dict(orient="records")
+    # Check if there are pending edits in the active data editor
+    editor_key = f"portfolio_matrix_editor_{st.session_state.get('editor_version', 0)}"
+    editor_state = st.session_state.get(editor_key, {})
+    edited_rows = editor_state.get("edited_rows", {}) if isinstance(editor_state, dict) else {}
+
+    rows = current_df[["Ticker", "Ponderación (%)"]].to_dict(orient="records")
+    for idx_str, changes in edited_rows.items():
+        try:
+            idx = int(idx_str)
+            if 0 <= idx < len(rows) and isinstance(changes, dict):
+                rows[idx].update(changes)
+        except (ValueError, TypeError):
+            pass
+
     if len(rows) <= 2:
         st.warning("⚠️ El portafolio debe contener al menos 2 activos para realizar la optimización de Markowitz.")
         return
 
-    clean_target = str(ticker_to_remove).strip().upper()
-    
-    # Find row to remove
+    # Determine target index
     target_idx = None
-    for i, r in enumerate(rows):
-        if str(r.get("Ticker", "")).strip().upper() == clean_target:
-            target_idx = i
-            break
-            
+    if row_index is not None and 0 <= row_index < len(rows):
+        target_idx = row_index
+    elif ticker_to_remove:
+        clean_target = str(ticker_to_remove).strip().upper()
+        for i, r in enumerate(rows):
+            if str(r.get("Ticker", "")).strip().upper() == clean_target:
+                target_idx = i
+                break
+
     if target_idx is None:
         return
 
@@ -490,17 +506,31 @@ def _remove_asset_from_portfolio(ticker_to_remove: Optional[str]) -> None:
         else:
             rows[-1]["Ponderación (%)"] = round(float(rows[-1]["Ponderación (%)"]) + diff, 2)
 
-    new_df = pd.DataFrame(rows)
+    clean_rows = [
+        {"Ticker": str(r.get("Ticker", "")).strip().upper(), "Ponderación (%)": float(r.get("Ponderación (%)", 0.0))}
+        for r in rows
+    ]
+    new_df = pd.DataFrame(clean_rows)
     st.session_state["portfolio_matrix_df"] = new_df
     st.session_state["num_assets"] = len(rows)
     st.session_state["num_assets_selector"] = len(rows)
     st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
-    st.session_state["tickers"] = [str(r["Ticker"]).strip().upper() for r in rows if str(r.get("Ticker", "")).strip()]
+    st.session_state["tickers"] = [r["Ticker"] for r in clean_rows if r["Ticker"]]
     st.session_state["weights"] = {
-        str(r["Ticker"]).strip().upper(): float(r["Ponderación (%)"]) / 100.0
-        for r in rows
-        if str(r.get("Ticker", "")).strip()
+        r["Ticker"]: r["Ponderación (%)"] / 100.0
+        for r in clean_rows
+        if r["Ticker"]
     }
+
+
+def _on_delete_matrix_row() -> None:
+    """Callback triggered when the trash button in a matrix row is clicked."""
+    click_state = st.session_state.get("matrix_delete_button_click")
+    if click_state is None:
+        return
+    row_idx = click_state.get("row") if isinstance(click_state, dict) else getattr(click_state, "row", None)
+    if row_idx is not None:
+        _remove_asset_from_portfolio(row_index=int(row_idx))
 
 
 # ===========================================================================
@@ -868,10 +898,13 @@ with col_refresh:
     st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
     btn_fetch = st.button("🔄 Descargar / Actualizar", use_container_width=True, help="Descarga los datos históricos de todos los tickers en la matriz.")
 
-# Render Editable Matrix
+# Render Editable Matrix with Trash Can Button Column
+matrix_input_df = st.session_state["portfolio_matrix_df"][["Ticker", "Ponderación (%)"]].copy()
+matrix_input_df["Eliminar"] = ":material/delete:"
+
 editor_key = f"portfolio_matrix_editor_{st.session_state.get('editor_version', 0)}"
 edited_matrix_df = st.data_editor(
-    st.session_state["portfolio_matrix_df"],
+    matrix_input_df,
     column_config={
         "Ticker": st.column_config.TextColumn(
             "Activo / Ticker",
@@ -885,6 +918,14 @@ edited_matrix_df = st.data_editor(
             max_value=100.0,
             step=0.5,
             format="%.2f%%",
+        ),
+        "Eliminar": st.column_config.ButtonColumn(
+            "🗑️",
+            help="Elimina este activo de la cartera y reasigna su ponderación (a CASH si existe, o equitativamente).",
+            width="small",
+            type="secondary",
+            on_click=_on_delete_matrix_row,
+            key="matrix_delete_button_click",
         ),
     },
     num_rows="fixed",
@@ -901,7 +942,7 @@ st.session_state["weights"] = {
     for _, r in edited_matrix_df.iterrows()
     if str(r["Ticker"]).strip()
 }
-st.session_state["portfolio_matrix_df"] = edited_matrix_df
+st.session_state["portfolio_matrix_df"] = edited_matrix_df[["Ticker", "Ponderación (%)"]].copy()
 st.session_state["num_assets"] = len(edited_matrix_df)
 
 current_sum_pct = sum([float(r["Ponderación (%)"]) for _, r in edited_matrix_df.iterrows()])
@@ -927,36 +968,13 @@ with col_btn_ms:
 with col_btn_gmv:
     st.button("🛡️ Aplicar GMV (Mín Riesgo)", on_click=_apply_optimal_weights_by_type, args=("gmv",), use_container_width=True)
 
-# Quick Asset Removal Row
-current_matrix_tickers = [str(r["Ticker"]).strip().upper() for _, r in edited_matrix_df.iterrows() if str(r["Ticker"]).strip()]
-c_del_label, c_del_sel, c_del_btn, c_del_info = st.columns([1.3, 2.0, 1.8, 3.9])
-with c_del_label:
-    st.markdown("<div style='padding-top: 8px; font-weight: 600; color: #CBD5E1; font-size: 13px;'>🗑️ Quitar Activo:</div>", unsafe_allow_html=True)
-
-with c_del_sel:
-    selected_asset_to_remove = st.selectbox(
-        "Seleccionar activo a eliminar",
-        options=current_matrix_tickers,
-        key="select_asset_to_remove_box",
-        label_visibility="collapsed",
-    )
-
-with c_del_btn:
-    st.button(
-        "🗑️ Eliminar Fila",
-        on_click=_remove_asset_from_portfolio,
-        args=(selected_asset_to_remove,),
-        use_container_width=True,
-        help="Elimina la fila seleccionada. Si hay CASH en la cartera, su peso se transfiere a CASH; si no, se reparte equitativamente entre los demás activos.",
-    )
-
-with c_del_info:
-    cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
-    has_cash = any(t in cash_symbols for t in current_matrix_tickers if t != selected_asset_to_remove)
-    if has_cash:
-        st.caption("💡 Al eliminar, la ponderación irá automáticamente a **CASH** sin alterar los demás.")
-    else:
-        st.caption("💡 Al eliminar, la ponderación se repartirá **equitativamente** entre todos los restantes.")
+# Reallocation informational caption
+cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+has_cash_in_matrix = any(t in cash_symbols for t in st.session_state["tickers"])
+if has_cash_in_matrix:
+    st.caption("💡 *Haz clic en el botón 🗑️ al lado de cualquier activo para eliminarlo. Su ponderación irá automáticamente a **CASH** sin alterar los demás.*")
+else:
+    st.caption("💡 *Haz clic en el botón 🗑️ al lado de cualquier activo para eliminarlo. Su ponderación se repartirá **equitativamente** entre todos los restantes.*")
 
 st.markdown("---")
 
