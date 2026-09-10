@@ -596,9 +596,9 @@ with st.sidebar:
 
     col_b1, col_b2 = st.columns(2)
     with col_b1:
-        min_weight_pct = st.number_input("Peso Mínimo (%)", value=0.0, min_value=-100.0, max_value=100.0, step=5.0) / 100.0
+        min_weight_pct = st.number_input("Peso Mínimo por Activo (%)", value=0.0, min_value=-100.0, max_value=100.0, step=5.0) / 100.0
     with col_b2:
-        max_weight_pct = st.number_input("Peso Máximo (%)", value=100.0, min_value=0.0, max_value=100.0, step=5.0) / 100.0
+        max_weight_pct = st.number_input("Peso Máximo por Activo (%)", value=100.0, min_value=0.0, max_value=100.0, step=5.0) / 100.0
 
     n_curr = max(1, len(st.session_state.get("tickers", [1, 2])))
     min_req_max = 1.0 / n_curr
@@ -606,6 +606,44 @@ with st.sidebar:
         st.caption(f"⚠️ *Con {n_curr} activos, el peso máx se auto-ajustará para permitir sumar 100%.*")
 
     bounds = (min_weight_pct if allow_short else max(0.0, min_weight_pct), max_weight_pct)
+
+    # --- CASH-specific weight constraints ---
+    cash_symbols_set = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
+    current_tickers = st.session_state.get("tickers", [])
+    has_cash_in_portfolio = any(str(t).strip().upper() in cash_symbols_set for t in current_tickers)
+    cash_min_pct = 0.0
+    cash_max_pct = 1.0
+    custom_bounds_list = None  # None means use uniform `bounds` for all assets
+
+    if has_cash_in_portfolio:
+        st.markdown("#### 💵 Restricciones de Liquidez (CASH)")
+        st.caption("Controla cuánto peso puede asignar el optimizador al activo de liquidez (CASH/USD). "
+                   "Útil para evitar que la cartera de mínima varianza asigne el 100% a cash o que la de máximo Sharpe lo elimine por completo.")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            cash_min_pct = st.number_input(
+                "Peso Mín. CASH (%)", value=5.0, min_value=0.0, max_value=100.0, step=1.0,
+                help="Peso mínimo que el optimizador debe mantener en CASH. Evita que Max Sharpe elimine la liquidez.",
+            ) / 100.0
+        with col_c2:
+            cash_max_pct = st.number_input(
+                "Peso Máx. CASH (%)", value=40.0, min_value=0.0, max_value=100.0, step=5.0,
+                help="Peso máximo permitido en CASH. Evita que Mínima Varianza asigne todo a liquidez.",
+            ) / 100.0
+
+        if cash_min_pct > cash_max_pct:
+            st.warning("⚠️ El peso mínimo de CASH no puede superar el máximo. Se usará el mínimo como ambos.")
+            cash_max_pct = cash_min_pct
+
+        # Build per-asset custom bounds
+        general_lo = min_weight_pct if allow_short else max(0.0, min_weight_pct)
+        general_hi = max_weight_pct
+        custom_bounds_list = []
+        for t in current_tickers:
+            if str(t).strip().upper() in cash_symbols_set:
+                custom_bounds_list.append((cash_min_pct, cash_max_pct))
+            else:
+                custom_bounds_list.append((general_lo, general_hi))
 
 
 # ===========================================================================
@@ -1000,17 +1038,31 @@ for t in st.session_state["tickers"]:
     else:
         asset_sharpes[t] = 0.0
 
+# Build per-asset bounds respecting CASH-specific constraints if CASH is present in active_tickers
+active_custom_bounds = None
+if any(str(t).strip().upper() in cash_symbols_set for t in active_tickers):
+    general_lo = min_weight_pct if allow_short else max(0.0, min_weight_pct)
+    general_hi = max_weight_pct
+    active_custom_bounds = []
+    for t in active_tickers:
+        if str(t).strip().upper() in cash_symbols_set:
+            active_custom_bounds.append((cash_min_pct, cash_max_pct))
+        else:
+            active_custom_bounds.append((general_lo, general_hi))
+
 ms_res = optimize_maximum_sharpe(
     expected_returns=mu_series.values,
     cov_matrix=psd_cov_df.values,
     rf=rf_val,
     bounds=bounds,
+    custom_bounds=active_custom_bounds,
 )
 gmv_res = optimize_global_minimum_variance(
     cov_matrix=psd_cov_df.values,
     expected_returns=mu_series.values,
     rf=rf_val,
     bounds=bounds,
+    custom_bounds=active_custom_bounds,
 )
 
 # Store optimal weights in session state for instant fast-action application
@@ -1024,6 +1076,7 @@ frontier_res = compute_efficient_frontier(
     rf=rf_val,
     num_points=100,
     bounds=bounds,
+    custom_bounds=active_custom_bounds,
 )
 
 # 4. Dirichlet Simplex Monte Carlo Cloud

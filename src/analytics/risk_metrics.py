@@ -201,10 +201,41 @@ def compute_drawdown_series(
 
     values = series.values
 
-    # Determine if input is returns or cumulative wealth:
-    # If all values are > 0 and mean > 1.0 (or first value is 1.0/10000.0)
-    # Typically returns have values near 0 (e.g. -0.1 to 0.1).
-    if np.all(values > 0) and (np.mean(values) > 2.0 or values[0] >= 1.0 and np.all(values >= 0.01)):
+    # Determine if input is returns or cumulative wealth.
+    # 
+    # Robust detection strategy (fixes prior heuristic that failed when
+    # cumulative wealth started below 1.0, e.g. first daily return negative):
+    #
+    # 1. Explicit signal: if the Series is named "wealth" or "cumulative_wealth",
+    #    trust the caller (compute_portfolio_risk_metrics passes name="wealth").
+    # 2. If any value is negative, it must be returns (wealth is always > 0).
+    # 3. If all values are strictly positive:
+    #    - Daily returns are typically in (-0.20, +0.20) with |mean| < 0.05.
+    #    - Cumulative wealth is typically in (0.5, 5+) with mean > 0.5.
+    #    - Use absolute magnitude: if max(|values|) < 0.5, likely returns.
+    #      Otherwise, if min(values) > 0.3, likely wealth.
+    series_name = str(getattr(series, "name", "") or "").lower()
+    is_wealth = False
+
+    if "wealth" in series_name:
+        # Explicit caller signal
+        is_wealth = True
+    elif np.any(values < 0):
+        # Contains negatives -> definitely returns
+        is_wealth = False
+    elif np.all(values > 0):
+        # All positive: distinguish wealth (values ~0.5-5+) from returns (values ~0.001)
+        abs_max = float(np.max(np.abs(values)))
+        abs_min = float(np.min(values))
+        if abs_max > 0.5 and abs_min > 0.3:
+            is_wealth = True
+        elif abs_max < 0.5:
+            is_wealth = False
+        else:
+            # Ambiguous zone: use mean as tiebreaker
+            is_wealth = float(np.mean(values)) > 0.5
+
+    if is_wealth:
         wealth = values
     else:
         # Input is returns: compute compounding wealth starting at 1.0

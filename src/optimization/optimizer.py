@@ -421,11 +421,58 @@ def optimize_maximum_sharpe(
     cash_indices = [i for i in range(n) if diag_vars[i] <= 1e-8]
 
     if len(cash_indices) > 0 and len(risky_indices) > 0:
+        # Compute bounds constraints for cash and risky assets
+        c_min = float(sum(parsed_bounds[j][0] for j in cash_indices))
+        c_max = float(sum(parsed_bounds[j][1] for j in cash_indices))
+        r_min = float(sum(parsed_bounds[i][0] for i in risky_indices))
+        r_max = float(sum(parsed_bounds[i][1] for i in risky_indices))
+
+        # On the CAL, Sharpe ratio is invariant to cash weight: Sharpe(w) = Sharpe(risky).
+        # To maximize return along this maximal Sharpe ray while respecting all constraints,
+        # cash allocation takes the minimum feasible weight allowed by budget & asset bounds.
+        w_c_floor = max(c_min, 1.0 - r_max)
+        w_c_ceil = min(c_max, 1.0 - r_min)
+        w_c_target = float(np.clip(w_c_floor, c_min, max(c_min, w_c_ceil)))
+
+        # Allocate cash weights
+        cash_weights = {}
+        rem_cash = w_c_target
+        for j in cash_indices:
+            b_min, _ = parsed_bounds[j]
+            cash_weights[j] = b_min
+            rem_cash -= b_min
+        if rem_cash > 1e-7:
+            for j in cash_indices:
+                b_min, b_max = parsed_bounds[j]
+                add = min(rem_cash, b_max - b_min)
+                cash_weights[j] += add
+                rem_cash -= add
+
+        total_cash_allocated = float(sum(cash_weights.values()))
+        b_risky = max(0.0, 1.0 - total_cash_allocated)
+
+        w = np.zeros(n, dtype=np.float64)
+        for j in cash_indices:
+            w[j] = cash_weights[j]
+
+        if b_risky <= 1e-8:
+            # 100% Cash allocation
+            exp_ret = float(w @ mu)
+            vol = float(np.sqrt(max(w @ cov_sym @ w, 0.0)))
+            return OptimizationResult(
+                weights=w,
+                expected_return=exp_ret,
+                volatility=vol,
+                sharpe_ratio=0.0,
+                status="optimal_cash_only",
+                success=True,
+                iterations=1,
+            )
+
         if len(risky_indices) == 1:
-            w = np.zeros(n, dtype=np.float64)
-            w[risky_indices[0]] = 1.0
-            vol = float(np.sqrt(max(cov_sym[risky_indices[0], risky_indices[0]], 0.0)))
-            exp_ret = float(mu[risky_indices[0]])
+            w[risky_indices[0]] = b_risky
+            vol = float(np.sqrt(max(cov_sym[risky_indices[0], risky_indices[0]], 0.0))) * b_risky
+            exp_ret = float(w @ mu)
             sr = float((exp_ret - rf) / max(vol, 1e-12))
             return OptimizationResult(
                 weights=w,
@@ -436,19 +483,28 @@ def optimize_maximum_sharpe(
                 success=True,
                 iterations=1,
             )
-        # Solve tangency portfolio on risky subset
+
+        # Solve tangency portfolio on risky subset with scaled bounds
         sub_mu = mu[risky_indices]
         sub_cov = cov_sym[np.ix_(risky_indices, risky_indices)]
-        sub_bounds = [parsed_bounds[i] for i in risky_indices]
+        sub_bounds = [
+            (parsed_bounds[i][0] / b_risky, parsed_bounds[i][1] / b_risky)
+            for i in risky_indices
+        ]
         sub_res = optimize_maximum_sharpe(sub_mu, sub_cov, rf=rf, custom_bounds=sub_bounds)
-        w = np.zeros(n, dtype=np.float64)
         for sub_i, orig_i in enumerate(risky_indices):
-            w[orig_i] = sub_res.weights[sub_i]
+            w[orig_i] = sub_res.weights[sub_i] * b_risky
+
+        # Normalize and clamp to ensure sum(w) == 1.0 exactly
+        w = normalize_and_clamp_weights(w, parsed_bounds)
+        vol = float(np.sqrt(max(w @ cov_sym @ w, 0.0)))
+        exp_ret = float(w @ mu)
+        sr = float((exp_ret - rf) / max(vol, 1e-12))
         return OptimizationResult(
             weights=w,
-            expected_return=sub_res.expected_return,
-            volatility=sub_res.volatility,
-            sharpe_ratio=sub_res.sharpe_ratio,
+            expected_return=exp_ret,
+            volatility=vol,
+            sharpe_ratio=sr,
             status=sub_res.status,
             success=sub_res.success,
             iterations=sub_res.iterations,

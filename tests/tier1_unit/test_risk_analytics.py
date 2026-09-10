@@ -162,3 +162,53 @@ def test_multihorizon_var_cvar_scaling_and_coherence(sample_returns_df):
     assert var_m >= var_d
     assert var_a >= var_m
 
+
+# ===========================================================================
+# 5. Max Drawdown Regression Tests (fixes double-compounding bug)
+# ===========================================================================
+
+def test_mdd_cumulative_wealth_first_day_negative():
+    """Regression: MDD must not be 0 when cumulative wealth starts below 1.0 (first return negative)."""
+    rets = np.array([-0.005, 0.01, 0.005, -0.02, -0.03, -0.015, 0.01, 0.005, 0.02, 0.01])
+    cum_w = pd.Series(np.cumprod(1.0 + rets), name="wealth")
+
+    # Manually compute correct MDD
+    running_max = np.maximum.accumulate(cum_w.values)
+    correct_mdd = abs(min((cum_w.values - running_max) / running_max))
+    assert correct_mdd > 0.0, "Test setup error: expected a non-zero drawdown"
+
+    _, mdd, _, _ = compute_drawdown_series(cum_w)
+    assert abs(mdd - correct_mdd) < 1e-10, (
+        f"MDD mismatch: got {mdd:.6%}, expected {correct_mdd:.6%}"
+    )
+
+
+def test_mdd_bear_market_cumulative_wealth():
+    """Regression: MDD must not be 0 in a bear market where wealth stays well below 1.0."""
+    np.random.seed(123)
+    bear_rets = np.random.normal(-0.001, 0.015, 252)
+    cum_w = pd.Series(np.cumprod(1.0 + bear_rets), name="wealth")
+
+    running_max = np.maximum.accumulate(cum_w.values)
+    correct_mdd = abs(min((cum_w.values - running_max) / running_max))
+    assert correct_mdd > 0.05, "Test setup error: bear market should have significant drawdown"
+
+    _, mdd, _, _ = compute_drawdown_series(cum_w)
+    assert abs(mdd - correct_mdd) < 1e-10, (
+        f"MDD mismatch: got {mdd:.6%}, expected {correct_mdd:.6%}"
+    )
+
+
+def test_mdd_returns_input_matches_wealth_input():
+    """MDD computed from returns must match MDD computed from the equivalent cumulative wealth."""
+    rets = pd.Series([0.05, -0.10, 0.03, -0.08, 0.02, 0.15, -0.05])
+    cum_w = pd.Series(np.cumprod(1.0 + rets.values), name="wealth")
+
+    _, mdd_from_returns, _, _ = compute_drawdown_series(rets)
+    _, mdd_from_wealth, _, _ = compute_drawdown_series(cum_w)
+
+    assert abs(mdd_from_returns - mdd_from_wealth) < 1e-10, (
+        f"MDD inconsistency: from returns={mdd_from_returns:.6%}, from wealth={mdd_from_wealth:.6%}"
+    )
+    assert mdd_from_returns > 0.0, "MDD should be non-zero for a series with drawdowns"
+

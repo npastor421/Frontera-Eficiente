@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit Tests for Cash / Liquidity Asset Integration across the Quantitative Pipeline.
 """
 
@@ -11,7 +11,8 @@ from src.data.cleaner import clean_and_align_prices
 from src.models.returns import calculate_expected_returns
 from src.models.covariance import estimate_covariance_matrix, corr_from_covariance
 from src.analytics.risk_metrics import compute_portfolio_risk_metrics
-from src.optimization.optimizer import optimize_maximum_sharpe
+from src.optimization.optimizer import optimize_maximum_sharpe, optimize_global_minimum_variance
+from src.optimization.frontier import compute_efficient_frontier
 
 
 def test_is_cash_ticker():
@@ -88,3 +89,80 @@ def test_optimize_maximum_sharpe_with_cash():
     # Pure tangency allocates to risky assets
     assert abs(opt.weights[2]) < 1e-6
     assert abs(sum(opt.weights) - 1.0) < 1e-4
+
+
+def test_optimize_maximum_sharpe_with_cash_min_constraint():
+    """Verify that Max Sharpe does NOT eliminate cash when cash has a minimum weight constraint."""
+    mu = pd.Series({"AAPL": 0.15, "MSFT": 0.12, "CASH": 0.04})
+    cov = pd.DataFrame(
+        [
+            [0.04, 0.01, 0.0],
+            [0.01, 0.03, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        index=["AAPL", "MSFT", "CASH"],
+        columns=["AAPL", "MSFT", "CASH"],
+    )
+
+    # Cash constraint: minimum 10%, maximum 30%
+    custom_bounds = [(0.0, 1.0), (0.0, 1.0), (0.10, 0.30)]
+    opt = optimize_maximum_sharpe(mu, cov, rf=0.04, custom_bounds=custom_bounds)
+
+    assert opt.success is True
+    # Cash weight must respect the minimum constraint (10%)
+    assert abs(opt.weights[2] - 0.10) < 1e-4
+    assert abs(sum(opt.weights) - 1.0) < 1e-4
+    # Risky assets must share the remaining 90%
+    assert abs(sum(opt.weights[:2]) - 0.90) < 1e-4
+
+
+def test_optimize_gmv_with_cash_max_constraint():
+    """Verify that GMV does NOT allocate 100% to cash when cash has a maximum weight constraint."""
+    mu = pd.Series({"AAPL": 0.15, "MSFT": 0.12, "CASH": 0.04})
+    cov = pd.DataFrame(
+        [
+            [0.04, 0.01, 0.0],
+            [0.01, 0.03, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        index=["AAPL", "MSFT", "CASH"],
+        columns=["AAPL", "MSFT", "CASH"],
+    )
+
+    # Cash constraint: minimum 5%, maximum 35%
+    custom_bounds = [(0.0, 1.0), (0.0, 1.0), (0.05, 0.35)]
+    gmv = optimize_global_minimum_variance(cov, expected_returns=mu, rf=0.04, custom_bounds=custom_bounds)
+
+    assert gmv.success is True
+    # Cash weight must NOT exceed 35% (GMV would take 100% without upper bound)
+    assert abs(gmv.weights[2] - 0.35) < 1e-4
+    assert abs(sum(gmv.weights) - 1.0) < 1e-4
+    # Risky assets must receive the remaining 65%
+    assert abs(sum(gmv.weights[:2]) - 0.65) < 1e-4
+
+
+def test_efficient_frontier_with_cash_constraints():
+    """Verify continuous efficient frontier respects cash min/max bounds."""
+    mu = pd.Series({"AAPL": 0.15, "MSFT": 0.12, "CASH": 0.04})
+    cov = pd.DataFrame(
+        [
+            [0.04, 0.01, 0.0],
+            [0.01, 0.03, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        index=["AAPL", "MSFT", "CASH"],
+        columns=["AAPL", "MSFT", "CASH"],
+    )
+
+    custom_bounds = [(0.0, 1.0), (0.0, 1.0), (0.10, 0.40)]
+    frontier = compute_efficient_frontier(mu, cov, rf=0.04, custom_bounds=custom_bounds, num_points=20)
+
+    # Check GMV portfolio
+    assert abs(frontier.gmv_portfolio.weights[2] - 0.40) < 1e-4
+    # Check Max Sharpe portfolio
+    assert abs(frontier.max_sharpe_portfolio.weights[2] - 0.10) < 1e-4
+    # Check all frontier points respect cash bounds [0.10, 0.40]
+    cash_weights = frontier.weights[:, 2]
+    assert (cash_weights >= 0.10 - 1e-5).all()
+    assert (cash_weights <= 0.40 + 1e-5).all()
+
