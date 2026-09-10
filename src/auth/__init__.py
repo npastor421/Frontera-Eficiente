@@ -1,4 +1,4 @@
-﻿"""
+"""
 Authentication and User Identity Package for Frontera Eficiente.
 """
 
@@ -7,6 +7,7 @@ from src.auth.google_auth import (
     get_active_user_id,
     init_auth_session,
     render_user_auth_sidebar,
+    render_user_auth_topbar,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "get_active_user_id",
     "init_auth_session",
     "render_user_auth_sidebar",
+    "render_user_auth_topbar",
 ]

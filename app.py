@@ -56,6 +56,7 @@ from src.auth.google_auth import (
     get_active_user_id,
     init_auth_session,
     render_user_auth_sidebar,
+    render_user_auth_topbar,
 )
 from src.presets import (
     PRESETS,
@@ -95,6 +96,23 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    /* Tighten excessive spacing in main container and sidebar */
+    .main .block-container {
+        padding-top: 1.0rem !important;
+        padding-bottom: 2.0rem !important;
+        max-width: 98% !important;
+    }
+    section[data-testid="stSidebar"] > div:first-child {
+        padding-top: 0.5rem !important;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 0.8rem !important;
+        padding-bottom: 2rem !important;
+    }
+    header[data-testid="stHeader"] {
+        height: 1.5rem !important;
+        background: transparent !important;
+    }
     /* Metric Cards */
     .metric-card {
         background-color: #161b26;
@@ -538,16 +556,13 @@ def _on_delete_matrix_row() -> None:
 # ===========================================================================
 
 with st.sidebar:
-    render_user_auth_sidebar()
-    st.markdown("## ⚙️ Configuración Cuantitativa")
-    st.caption("Motor de Modelado y Frontera de Markowitz")
-    st.markdown("---")
-
     # Data Source Selection
+    st.markdown("### 📥 Fuente de Datos")
     data_source = st.radio(
         "Fuente de Datos Históricos",
         options=["Yahoo Finance (En Vivo)", "Carga Manual (CSV / Excel)"],
         index=0,
+        label_visibility="collapsed",
     )
 
     clean_prices_df = None
@@ -637,54 +652,50 @@ with st.sidebar:
 
     bounds = (min_weight_pct if allow_short else max(0.0, min_weight_pct), max_weight_pct)
 
-    # --- CASH-specific weight constraints ---
+    # --- CASH-specific weight constraints (ALWAYS VISIBLE) ---
+    st.markdown("#### 💵 Restricción de Liquidez / CASH")
+    st.caption("Controla cuánto peso puede asignar el simulador y optimizador al activo de liquidez (CASH/USD).")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        cash_min_pct = st.number_input(
+            "Peso Mín. CASH (%)", value=5.0, min_value=0.0, max_value=100.0, step=1.0,
+            help="Peso mínimo en CASH para el optimizador. Evita que Máximo Sharpe elimine la liquidez.",
+        ) / 100.0
+    with col_c2:
+        cash_max_pct = st.number_input(
+            "Peso Máx. CASH (%)", value=40.0, min_value=0.0, max_value=100.0, step=5.0,
+            help="Peso máximo permitido en CASH. Evita que Mínima Varianza concentre el 100% en liquidez.",
+        ) / 100.0
+
+    if cash_min_pct > cash_max_pct:
+        st.warning("⚠️ El peso mínimo de CASH no puede superar el máximo. Se usará el mínimo como ambos.")
+        cash_max_pct = cash_min_pct
+
     cash_symbols_set = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
     current_tickers = st.session_state.get("tickers", [])
     has_cash_in_portfolio = any(str(t).strip().upper() in cash_symbols_set for t in current_tickers)
-    cash_min_pct = 0.0
-    cash_max_pct = 1.0
-    custom_bounds_list = None  # None means use uniform `bounds` for all assets
 
-    if has_cash_in_portfolio:
-        st.markdown("#### 💵 Restricciones de Liquidez (CASH)")
-        st.caption("Controla cuánto peso puede asignar el optimizador al activo de liquidez (CASH/USD). "
-                   "Útil para evitar que la cartera de mínima varianza asigne el 100% a cash o que la de máximo Sharpe lo elimine por completo.")
-        col_c1, col_c2 = st.columns(2)
-        with col_c1:
-            cash_min_pct = st.number_input(
-                "Peso Mín. CASH (%)", value=5.0, min_value=0.0, max_value=100.0, step=1.0,
-                help="Peso mínimo que el optimizador debe mantener en CASH. Evita que Max Sharpe elimine la liquidez.",
-            ) / 100.0
-        with col_c2:
-            cash_max_pct = st.number_input(
-                "Peso Máx. CASH (%)", value=40.0, min_value=0.0, max_value=100.0, step=5.0,
-                help="Peso máximo permitido en CASH. Evita que Mínima Varianza asigne todo a liquidez.",
-            ) / 100.0
-
-        if cash_min_pct > cash_max_pct:
-            st.warning("⚠️ El peso mínimo de CASH no puede superar el máximo. Se usará el mínimo como ambos.")
-            cash_max_pct = cash_min_pct
-
-        # Build per-asset custom bounds
-        general_lo = min_weight_pct if allow_short else max(0.0, min_weight_pct)
-        general_hi = max_weight_pct
-        custom_bounds_list = []
-        for t in current_tickers:
-            if str(t).strip().upper() in cash_symbols_set:
-                custom_bounds_list.append((cash_min_pct, cash_max_pct))
-            else:
-                custom_bounds_list.append((general_lo, general_hi))
+    # Build per-asset custom bounds
+    general_lo = min_weight_pct if allow_short else max(0.0, min_weight_pct)
+    general_hi = max_weight_pct
+    custom_bounds_list = []
+    for t in current_tickers:
+        if str(t).strip().upper() in cash_symbols_set:
+            custom_bounds_list.append((cash_min_pct, cash_max_pct))
+        else:
+            custom_bounds_list.append((general_lo, general_hi))
 
 
 # ===========================================================================
 # 4. Main Dashboard Header & Top Presets 1-Click Action Bar
 # ===========================================================================
 
-st.markdown("# 📈 Frontera Eficiente & Optimización Cuantitativa")
-st.markdown(
-    "**Plataforma interactiva de Markowitz:** Modelado de covarianza robusta (Ledoit-Wolf / EWMA), "
-    "simulación dual de Monte Carlo (simplex de ponderaciones y conos de trayectorias) y análisis de riesgo avanzado."
-)
+col_head_title, col_head_auth = st.columns([0.82, 0.18])
+with col_head_title:
+    st.markdown("<h2 style='margin-bottom: 2px; padding-top: 0px;'>📈 Frontera Eficiente & Optimización Cuantitativa</h2>", unsafe_allow_html=True)
+    st.caption("Plataforma interactiva de Markowitz: Modelado de covarianza robusta (Ledoit-Wolf / EWMA), simulación dual de Monte Carlo y análisis de riesgo.")
+with col_head_auth:
+    render_user_auth_topbar()
 
 st.markdown("### 🎯 Portafolios Predefinidos (1-Click Presets)")
 cols_p = st.columns(5)
@@ -920,9 +931,10 @@ edited_matrix_df = st.data_editor(
             format="%.2f%%",
         ),
         "Eliminar": st.column_config.ButtonColumn(
-            "🗑️",
-            help="Elimina este activo de la cartera y reasigna su ponderación (a CASH si existe, o equitativamente).",
-            width="small",
+            label="",
+            help="Eliminar este activo",
+            width=40,
+            alignment="center",
             type="secondary",
             on_click=_on_delete_matrix_row,
             key="matrix_delete_button_click",
@@ -930,7 +942,7 @@ edited_matrix_df = st.data_editor(
     },
     num_rows="fixed",
     use_container_width=True,
-    hide_index=False,
+    hide_index=True,
     key=editor_key,
 )
 
@@ -967,14 +979,6 @@ with col_btn_ms:
 
 with col_btn_gmv:
     st.button("🛡️ Aplicar GMV (Mín Riesgo)", on_click=_apply_optimal_weights_by_type, args=("gmv",), use_container_width=True)
-
-# Reallocation informational caption
-cash_symbols = {"CASH", "USD", "USD_CASH", "LIQUIDEZ", "EFECTIVO", "MONEY", "CASH.USD"}
-has_cash_in_matrix = any(t in cash_symbols for t in st.session_state["tickers"])
-if has_cash_in_matrix:
-    st.caption("💡 *Haz clic en el botón 🗑️ al lado de cualquier activo para eliminarlo. Su ponderación irá automáticamente a **CASH** sin alterar los demás.*")
-else:
-    st.caption("💡 *Haz clic en el botón 🗑️ al lado de cualquier activo para eliminarlo. Su ponderación se repartirá **equitativamente** entre todos los restantes.*")
 
 st.markdown("---")
 
